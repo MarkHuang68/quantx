@@ -14,21 +14,21 @@ SYMBOLS_TO_TRADE = [
 ]
 DEFAULT_SYMBOL = SYMBOLS_TO_TRADE[0] 
 
-# --- 3. 模型 A (5m 價格模型) 的「版本控制」 ---
-PRICE_MODEL_TIMEFRAME = '5m'
-PRICE_MODEL_TRAIN_LIMIT = 300000
-PRICE_MODEL_RMSE_THRESHOLD = 8.00
-PRICE_MODEL_VERSION = "1.0" # <-- *** 版本號 ***
+# --- 3. 模型 A (5m 進場模型) 的「版本控制」 ---
+ENTRY_MODEL_TIMEFRAME = '5m'
+ENTRY_MODEL_TRAIN_LIMIT = 300000
+ENTRY_MODEL_RMSE_THRESHOLD = 8.00
+ENTRY_MODEL_VERSION = "1.0" # <-- *** 版本號 ***
 ABS_MAX_RMSE_PCT = 0.003
 
-def get_price_model_path(symbol, version):
+def get_entry_model_path(symbol, version):
     """
-    根據 symbol 和 version 生成「價格模型」的儲存路徑。
-    例如: 'models/model_price_5m_XGB_ETH_USDT_v1.0.json'
+    根據 symbol 和 version 生成「進場模型」的儲存路
+    例如: 'models/model_entry_5m_XGB_ETH_USDT_v1.0.json'
     """
     symbol_str = symbol.replace('/', '_')
     # (os.path.join 確保路徑在 Windows/Linux 上都正確)
-    return os.path.join(MODEL_DIR, f"price_model_XGB_{symbol_str}_v{version}.json")
+    return os.path.join(MODEL_DIR, f"entry_model_XGB_{symbol_str}_v{version}.json")
 
 # --- 4. 模型 B (1h 趨勢模型) 的「版本控制」 ---
 TREND_MODEL_TIMEFRAME = '1h'

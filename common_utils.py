@@ -4,36 +4,30 @@
 
 import ccxt
 import pandas as pd
-import talib
+import ta
 import numpy as np
 import time
 import config  # <--- *** 1. 引用您的「設定檔」 ***
 
 def fetch_data(symbol, timeframe, total_limit):
     """
-    從幣安 (Binance) 獲取大量 OHLCV 資料 (使用迴圈)。
+    從 Coinbase 獲取大量 OHLCV 資料 (使用迴圈)。
     """
     print(f"--- 步驟 1: 正在獲取 {symbol} {timeframe} 資料 (目標 {total_limit} 筆) ---")
-    exchange = ccxt.binance({'rateLimit': 1200, 'enableRateLimit': True})
+    exchange = ccxt.coinbase({'rateLimit': 1200, 'enableRateLimit': True})
     
-    try:
-        timeframe_duration_ms = exchange.parse_timeframe(timeframe) * 1000
-    except Exception as e:
-        print(f"Timeframe 格式錯誤: {e}。")
-        return None
-        
-    limit_per_request = 1000
+    limit_per_request = 300 # Coinbase max limit is 300
     all_ohlcv = []
-    total_duration_ms = total_limit * timeframe_duration_ms
-    since_timestamp = exchange.milliseconds() - total_duration_ms
 
-    while True:
+    needed_limit = total_limit
+
+    while needed_limit > 0:
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=since_timestamp, limit=limit_per_request)
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=min(needed_limit, limit_per_request))
             if not ohlcv: break
-            all_ohlcv.extend(ohlcv)
-            last_timestamp = ohlcv[-1][0]
-            since_timestamp = last_timestamp + timeframe_duration_ms
+            all_ohlcv = ohlcv + all_ohlcv
+            needed_limit -= len(ohlcv)
+
         except Exception as e:
             print(f"獲取資料時發生未知錯誤: {e}")
             time.sleep(5)
@@ -56,14 +50,13 @@ def create_features_trend(df, ema=20, sma=60, rsi=14, bbands=10):
     """
     print("\n--- 正在計算「1h 趨勢特徵」(黃金配方) ---")
     try:
-        close_prices = df['Close'].values.astype(float)
-        
-        df['EMA'] = talib.EMA(close_prices, timeperiod=20)
-        df['SMA'] = talib.SMA(close_prices, timeperiod=60)
+        df['EMA'] = ta.trend.ema_indicator(df['Close'], window=20)
+        df['SMA'] = ta.trend.sma_indicator(df['Close'], window=60)
         df['Maybe'] = (df['EMA'] > df['SMA']).astype(int)
-        df['RSI'] = talib.RSI(close_prices, timeperiod=14)
-        upperband, middleband, lowerband = talib.BBANDS(close_prices, timeperiod=10, nbdevup=2, nbdevdn=2, matype=0)
-        df['BB_Width'] = (upperband - lowerband) / (middleband + 1e-10)
+        df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+
+        bb = ta.volatility.BollingerBands(close=df['Close'], window=10, window_dev=2)
+        df['BB_Width'] = bb.bollinger_wband()
         
         df_features = df.dropna() 
 
@@ -78,63 +71,43 @@ def create_features_trend(df, ema=20, sma=60, rsi=14, bbands=10):
         return df_features, features_list
     except Exception as e:
         print(f"計算 1h 特徵時發生錯誤: {e}")
-        return None
+        return None, None
 
-def create_features_price(df, rsi=14, wma=2, macd_fast=6, macd_slow=13, adx=14, bbands=2):
+def create_features_entry(df):
     """
-    (模型 A) 5m 價格特徵。
-    *** 您的「RMSE=8.00」特徵就「寫死」在這裡 ***
+    (模型 A) 5m 進場特徵 (報酬率預測模型)。
     """
-    print("\n--- 正在計算「5m 價格特徵」---")
+    if df is None:
+        return None, None
+        
+    print("\n--- 正在計算「5m 進場特徵」---")
+
     try:
-        close_prices = df['Close'].values.astype(float)
-        high_prices = df['High'].values.astype(float)
-        low_prices = df['Low'].values.astype(float)
-        volume = df['Volume'].values.astype(float)
-        
-        df['RSI'] = talib.RSI(close_prices, timeperiod=rsi)
-        df['WMA_close_2'] = talib.WMA(close_prices, timeperiod=wma)
-        df['WMA_high_2'] = talib.WMA(high_prices, timeperiod=wma)
-        df['WMA_low_2'] = talib.WMA(low_prices, timeperiod=wma)
+        # --- 時間特徵 ---
+        df['HOUR'] = df.index.hour
+        df['MONTH'] = df.index.month
 
-        macd, macdsignal, _ = talib.MACD(close_prices, 
-                                         fastperiod=macd_fast, 
-                                         slowperiod=macd_slow, 
-                                         signalperiod=9)
-        df['MACD'] = macd
-        df['MACD_signal'] = macdsignal
-        df['OBV'] = talib.OBV(close_prices, volume)
+        # --- TA 指標 ---
+        df = ta.add_all_ta_features(df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
 
-        df['ADX'] = talib.ADX(df['High'], df['Low'], df['Close'], timeperiod=adx)
-        df['ADX_hist'] = talib.PLUS_DI(df['High'], df['Low'], df['Close'], timeperiod=adx) - talib.MINUS_DI(df['High'], df['Low'], df['Close'], timeperiod=adx)
+        df['Close_SMA'] = ta.trend.sma_indicator(df['Close'], window=3)
+        df['EMA'] = ta.trend.ema_indicator(df['Close'], window=20)
+        df['CLOSE_EMA'] = (df['Close'] - df['EMA']) / df['EMA']
 
-        upperband, middleband, lowerband = talib.BBANDS(close_prices, 
-                                                        timeperiod=bbands, 
-                                                        nbdevup=2, 
-                                                        nbdevdn=2, 
-                                                        matype=0)
-        
-        df['BB_Width'] = (upperband - lowerband) / (middleband + 1e-10)
-        df['BB_Percent'] = (close_prices - lowerband) / (upperband - lowerband + 1e-10)
-
-        df['Volume'] = volume
-
-        df_features = df.dropna()
-
+        # --- (特徵列表) ---
         features_list = [
-            'RSI',
-            'WMA_close_2', 'WMA_high_2', 'WMA_low_2',
-            'MACD', 'MACD_signal', 'OBV',
-            'ADX', 'ADX_hist',
-            'BB_Width',
-            'BB_Percent',
-            'Volume'
+            'HOUR', 'MONTH', 'EMA', 'CLOSE_EMA', 'volatility_atr', 'momentum_rsi',
+            'trend_adx', 'trend_adx_pos', 'trend_adx_neg', 'momentum_stoch', 'momentum_stoch_signal',
+            'trend_macd', 'trend_macd_signal', 'trend_macd_diff', 'volatility_bbw', 'volatility_bbp',
+            'volume_obv', 'Volume', 'volume_cmf'
         ]
 
+        df_features = df.dropna()
         return df_features, features_list
+
     except Exception as e:
-        print(f"計算 5m 特徵時出錯: {e}")
-        return None
+        print(f"計算進場特徵時發生錯誤: {e}")
+        return None, None
 
 def create_sequences(data, target, lookback_window=24):
     """ (這是 LSTM 專用的，保持不變) """

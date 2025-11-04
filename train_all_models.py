@@ -44,8 +44,8 @@ def train_all_symbols():
         # 參數讀取
         trend_limit = config.TREND_MODEL_TRAIN_LIMIT
         trend_version = config.TREND_MODEL_VERSION
-        price_limit = config.PRICE_MODEL_TRAIN_LIMIT
-        price_version = config.PRICE_MODEL_VERSION
+        entry_limit = config.ENTRY_MODEL_TRAIN_LIMIT # <-- 修改
+        entry_version = config.ENTRY_MODEL_VERSION # <-- 修改
 
         # 執行 LSTM 趨勢訓練
         success = run_training_script(
@@ -55,18 +55,18 @@ def train_all_symbols():
             trend_version
         )
         if not success:
-            print(f"🛑 錯誤：{symbol} 的趨勢模型訓練失敗，跳過價格模型。")
+            print(f"🛑 錯誤：{symbol} 的趨勢模型訓練失敗，跳過進場模型。") # <-- 修改
             continue 
 
-        # --- 2. 訓練價格模型 (XGBoost) ---
+        # --- 2. 訓練進場模型 (XGBoost) ---
         success = run_training_script(
-            'train_price_model.py', 
+            'train_entry_model.py', # <-- 修改
             symbol, 
-            price_limit, 
-            price_version
+            entry_limit,
+            entry_version
         )
         if not success:
-            print(f"🛑 錯誤：{symbol} 的價格模型訓練失敗。")
+            print(f"🛑 錯誤：{symbol} 的進場模型訓練失敗。") # <-- 修改
             continue 
 
         print(f"🎉 {symbol} 兩項模型訓練皆成功完成！")
@@ -78,5 +78,5 @@ def train_all_symbols():
 
 if __name__ == '__main__':
     # (您必須確保這 4 個檔案都在同一個目錄)
-    # config.py, common_utils.py, train_trend_model.py, train_price_model.py
+    # config.py, common_utils.py, train_trend_model.py, train_entry_model.py
     train_all_symbols()

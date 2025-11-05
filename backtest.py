@@ -4,6 +4,7 @@
 import pandas as pd
 import numpy as np
 import argparse
+import talib
 import tensorflow as tf
 import xgboost as xgb
 import warnings
@@ -126,60 +127,78 @@ def run_strategy_backtest(df_backtest, symbol):
     STOP_LOSS_PCT = 0.005
     TAKE_PROFIT_PCT = 0.06
     COMMISSION_FEE = 0.00055
-
-    for i in range(1, len(df_backtest)):
-        row = df_backtest.iloc[i]
+    RSI_PERIOD = 14  # RSI 週期
+    RSI_OVERBOUGHT = 65  # RSI 上限 (避免過買)
+    RSI_OVERSOLD = 35  # RSI 下限 (避免過賣)
+    
+    # 計算 RSI (新增濾波器)
+    backtest_df['RSI'] = talib.RSI(backtest_df['Close'], timeperiod=RSI_PERIOD)
+    
+    bh_position = initial_balance / backtest_df['Close'].iloc[0]
+    bh_curve = [initial_balance]
+    
+    for i in range(1, len(backtest_df)):
+        row = backtest_df.iloc[i]
         current_price = row['Close']
         trend_signal = row.get('trend_signal', None)
         predicted_return = row.get('entry_prediction', None)
-
+        rsi = row['RSI']  # 新增: 取得當前 RSI
+        
+        # 更新當前淨值
         current_net_worth = cash + (position_size * current_price)
         equity_curve.append(current_net_worth)
-
+        
         if in_position:
             pnl_pct = (current_price - entry_price) / entry_price if position_size > 0 else (entry_price - current_price) / entry_price
             if pnl_pct <= -STOP_LOSS_PCT or pnl_pct >= TAKE_PROFIT_PCT:
                 exit_price = current_price
                 cash += position_size * exit_price
-                cash -= abs(position_size * exit_price) * COMMISSION_FEE  # 單獨扣費
+                cash -= abs(position_size * exit_price) * COMMISSION_FEE  # 扣平倉費
                 trade_pnl = position_size * (exit_price - entry_price)
                 trades.append(trade_pnl)
                 in_position = False
                 position_size = 0.0
                 entry_price = 0.0
-
+                continue
+        
         if not in_position:
             if predicted_return is None or trend_signal is None:
                 continue
-
-            if trend_signal == 1 and predicted_return > ENTRY_THRESHOLD:
-                size = (cash * 0.5) / current_price
-                position_size = size
-                cash -= size * current_price
-                cash -= abs(size * current_price) * COMMISSION_FEE  # 單獨扣費
+            
+            if (trend_signal == 1 and predicted_return > ENTRY_THRESHOLD) or \
+               (trend_signal == 0 and predicted_return < -ENTRY_THRESHOLD):
+                
+                # 新增: Kelly Criterion 計算倉位比例 (f = (p - q) / b, p=預測勝率約0.5, q=1-p, b=預測報酬/止損比)
+                p = 0.6 + abs(predicted_return)  # 簡化勝率估計 (基於預測報酬調整)
+                q = 1 - p
+                b = abs(predicted_return) / STOP_LOSS_PCT  # 風險報酬比
+                kelly_fraction = (p - q) / b if b != 0 else 0.01  # 避免除零，最小 1%
+                kelly_fraction = max(min(kelly_fraction, 0.5), 0.01)  # 限制 1%-50%
+                
+                size = (cash * kelly_fraction) / current_price  # 動態計算數量
+                position_size = size if trend_signal == 1 else -size
+                if trend_signal == 1:
+                    cash -= size * current_price
+                else:
+                    cash += size * current_price
+                cash -= abs(size * current_price) * COMMISSION_FEE
                 entry_price = current_price
                 in_position = True
-            elif trend_signal == 0 and predicted_return < -ENTRY_THRESHOLD:
-                size = (cash * 0.5) / current_price
-                position_size = -size
-                cash += size * current_price
-                cash -= abs(size * current_price) * COMMISSION_FEE  # 單獨扣費
-                entry_price = current_price
-                in_position = True
-
+        
         bh_net_worth = bh_position * current_price
         bh_curve.append(bh_net_worth)
-
-    bh_curve.append(bh_position * df_backtest['Close'].iloc[-1])
-
+    
+    # 結束強制平倉 (原邏輯)
     if in_position:
-        final_price = df_backtest['Close'].iloc[-1]
-        cash += position_size * final_price * (1 - COMMISSION_FEE)
+        final_price = backtest_df['Close'].iloc[-1]
+        cash += position_size * final_price
+        cash -= abs(position_size * final_price) * COMMISSION_FEE
         trade_pnl = position_size * (final_price - entry_price)
         trades.append(trade_pnl)
-
+    
     final_net = cash
     equity_curve.append(final_net)
+    bh_curve.append(bh_position * backtest_df['Close'].iloc[-1])
 
     if not trades:
         print("回測期間沒有發生任何交易。")

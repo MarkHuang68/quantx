@@ -127,7 +127,7 @@ def calculate_all_features(df):
 # --- 步驟 3: 載入「全新」數據並進行測試 ---
 
 # 3a. 載入模型
-MODEL_FILENAME = 'WLFI_USDT_15m.json' # (假設您已儲存)
+MODEL_FILENAME = 'ETH_USDT_5m.json' # (假設您已儲存)
 print(f"正在載入模型: {MODEL_FILENAME}...")
 model = xgb.XGBRegressor()
 model.load_model(MODEL_FILENAME)
@@ -135,7 +135,7 @@ print("模型載入成功。")
 
 # 3b. 載入「全新」的樣本外資料
 # (您必須提供這份 CSV 檔案)
-NEW_DATA_FILE = 'WLFI_USDT_15m_data.csv' 
+NEW_DATA_FILE = 'ETH_USDT_5m_data.csv' 
 print(f"正在載入全新資料: {NEW_DATA_FILE}...")
 # (請確保您的 CSV 欄位名稱是 'Timestamp', 'Open', 'High', 'Low', 'Close', 'Volume')
 try:

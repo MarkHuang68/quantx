@@ -20,7 +20,7 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 XGB_BASE_PARAMS = {
     'n_estimators': 1000,
     'learning_rate': 0.01,
-    'objective': 'reg:squarederror',
+    'objective': 'binary:logistic',
     'n_jobs': -1,
     'random_state': 42,
     'early_stopping_rounds': 10,
@@ -37,7 +37,7 @@ def train_xgb_regressor(df_features, features_list):
     # --- 數據準備 (Target) ---
     df_model = df_features.copy()
     # *** 核心修改: Target 改為報酬率 ***
-    df_model['target'] = df_model['Close'].shift(-1) / df_model['Close_SMA'] - 1
+    df_model['target'] = df_model['Close'].shift(-1) > df_model['Close']
     df_model = df_model.dropna()
 
     # 2. 獲取 X 和 Y
@@ -66,7 +66,7 @@ def train_xgb_regressor(df_features, features_list):
 if __name__ == "__main__":
 
     # --- 3. 建立「參數解析器」 ---
-    parser = argparse.ArgumentParser(description='訓練 5m XGBoost 進場模型')
+    parser = argparse.ArgumentParser(description=f'訓練 {config.ENTRY_MODEL_TIMEFRAME} XGBoost 進場模型')
 
     parser.add_argument('-s', '--symbol', type=str, required=True, help='要訓練的交易對 (例如: ETH/USDT 或 BTC/USDT)')
     parser.add_argument('-l', '--limit', type=int, default=config.ENTRY_MODEL_TRAIN_LIMIT, help=f'K 線筆數 (預設: {config.ENTRY_MODEL_TRAIN_LIMIT})')

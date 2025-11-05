@@ -16,10 +16,10 @@ DEFAULT_SYMBOL = SYMBOLS_TO_TRADE[0]
 
 # --- 3. 模型 A (5m 進場模型) 的「版本控制」 ---
 ENTRY_MODEL_TIMEFRAME = '5m'
-ENTRY_MODEL_TRAIN_LIMIT = 300000
+ENTRY_MODEL_TRAIN_LIMIT = 10000
 ENTRY_MODEL_RMSE_THRESHOLD = 8.00
 ENTRY_MODEL_VERSION = "1.0" # <-- *** 版本號 ***
-ABS_MAX_RMSE_PCT = 0.003
+ABS_MAX_RMSE_PCT = 0.006
 
 def get_entry_model_path(symbol, version):
     """
@@ -33,6 +33,7 @@ def get_entry_model_path(symbol, version):
 # --- 4. 模型 B (1h 趨勢模型) 的「版本控制」 ---
 TREND_MODEL_TIMEFRAME = '1h'
 TREND_MODEL_TRAIN_LIMIT = 30000 
+TREND_MODEL_BACKTEST_LIMIT = 1000
 TREND_MODEL_VERSION = "1.0" # <-- *** 版本號 ***
 ABS_MIN_ACCURACY = 0.6
 

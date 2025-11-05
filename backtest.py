@@ -57,8 +57,8 @@ def prepare_backtest_data(symbol, models_data):
     print("\n--- 正在準備回測數據 (預先計算所有訊號) ---")
     
     # --- 1. 載入數據 ---
-    df_1h = fetch_data(symbol, config.TREND_MODEL_TIMEFRAME, config.TREND_MODEL_TRAIN_LIMIT)
-    df_5m = fetch_data(symbol, config.ENTRY_MODEL_TIMEFRAME, config.TREND_MODEL_TRAIN_LIMIT * 12)
+    df_1h = fetch_data(symbol, config.TREND_MODEL_TIMEFRAME, args.start, args.end, config.TREND_MODEL_BACKTEST_LIMIT)
+    df_5m = fetch_data(symbol, config.ENTRY_MODEL_TIMEFRAME, args.start, args.end, config.TREND_MODEL_BACKTEST_LIMIT * 12)
     
     if df_1h is None or df_5m is None:
         print("🛑 數據獲取失敗。")
@@ -83,7 +83,7 @@ def prepare_backtest_data(symbol, models_data):
     df_1h_features['trend_signal'] = trend_predictions
     
     # --- 3. 預計算「進場模型 (XGB)」訊號 (在 5m 數據上) ---
-    print("正在計算 5m 進場模型訊號...")
+    print(f"正在計算 {config.ENTRY_MODEL_TIMEFRAME} 進場模型訊號...")
     entry_model = models_data['entry_model']
     
     df_5m_features, features_list_5m = create_features_entry(df_5m.copy())
@@ -92,7 +92,7 @@ def prepare_backtest_data(symbol, models_data):
     df_5m_features['entry_prediction'] = entry_model.predict(X_5m) # <-- 預測的是報酬率
     
     # --- 4. 合併 MTF 數據 ---
-    print("正在合併 1h 和 5m 數據...")
+    print(f"正在合併 {config.TREND_MODEL_TIMEFRAME} 和 {config.ENTRY_MODEL_TIMEFRAME} 數據...")
     
     df_1h_signal_resampled = df_1h_features[['trend_signal']].reindex(df_5m_features.index, method='ffill')
     df_backtest = df_5m_features.join(df_1h_signal_resampled)
@@ -116,13 +116,16 @@ def run_strategy_backtest(df_backtest, symbol):
     entry_price = 0.0
     in_position = False
 
+    bh_position = initial_balance / df_backtest['Close'].iloc[0]
+    bh_curve = [initial_balance]
+
     trades = []
     equity_curve = []
 
     ENTRY_THRESHOLD = 0.0001
-    STOP_LOSS_PCT = 0.015
-    TAKE_PROFIT_PCT = 0.03
-    COMMISSION_FEE = 0.0004
+    STOP_LOSS_PCT = 0.005
+    TAKE_PROFIT_PCT = 0.06
+    COMMISSION_FEE = 0.00055
 
     for i in range(1, len(df_backtest)):
         row = df_backtest.iloc[i]
@@ -137,7 +140,8 @@ def run_strategy_backtest(df_backtest, symbol):
             pnl_pct = (current_price - entry_price) / entry_price if position_size > 0 else (entry_price - current_price) / entry_price
             if pnl_pct <= -STOP_LOSS_PCT or pnl_pct >= TAKE_PROFIT_PCT:
                 exit_price = current_price
-                cash += position_size * exit_price * (1 - COMMISSION_FEE)
+                cash += position_size * exit_price
+                cash -= abs(position_size * exit_price) * COMMISSION_FEE  # 單獨扣費
                 trade_pnl = position_size * (exit_price - entry_price)
                 trades.append(trade_pnl)
                 in_position = False
@@ -150,16 +154,23 @@ def run_strategy_backtest(df_backtest, symbol):
 
             if trend_signal == 1 and predicted_return > ENTRY_THRESHOLD:
                 size = (cash * 0.5) / current_price
-                position_size = size * (1 - COMMISSION_FEE)
+                position_size = size
                 cash -= size * current_price
+                cash -= abs(size * current_price) * COMMISSION_FEE  # 單獨扣費
                 entry_price = current_price
                 in_position = True
             elif trend_signal == 0 and predicted_return < -ENTRY_THRESHOLD:
                 size = (cash * 0.5) / current_price
-                position_size = -size * (1 - COMMISSION_FEE)
-                cash -= size * current_price
+                position_size = -size
+                cash += size * current_price
+                cash -= abs(size * current_price) * COMMISSION_FEE  # 單獨扣費
                 entry_price = current_price
                 in_position = True
+
+        bh_net_worth = bh_position * current_price
+        bh_curve.append(bh_net_worth)
+
+    bh_curve.append(bh_position * df_backtest['Close'].iloc[-1])
 
     if in_position:
         final_price = df_backtest['Close'].iloc[-1]
@@ -179,6 +190,16 @@ def run_strategy_backtest(df_backtest, symbol):
     win_rate = (len(wins) / total_trades) * 100 if total_trades > 0 else 0
     total_pnl = final_net - initial_balance
 
+    # 年化 Sharpe Ratio (假設 5m 框架)
+    equity_returns = pd.Series(equity_curve).pct_change().dropna()  # 日報酬率
+    sr = equity_returns.mean() / equity_returns.std() if equity_returns.std() != 0 else 0  # Sharpe Ratio
+    sr_annual = sr * np.sqrt(365 * 24 * 12 / len(equity_curve))  # 年化 (365天 * 24小時 * 12根/小時)
+    
+    # Max Drawdown
+    peak = np.maximum.accumulate(equity_curve)  # 累計峰值
+    dd = (np.array(equity_curve) - peak) / peak  # 回檔率
+    mdd = dd.min() * 100 if len(dd) > 0 else 0   # 最大回檔 (%)
+
     print(f"\n--- 策略回測績效報告 (Symbol: {symbol}) ---")
     print(f"初始資金: ${initial_balance:.2f}")
     print(f"最終淨值: ${final_net:.2f}")
@@ -186,19 +207,28 @@ def run_strategy_backtest(df_backtest, symbol):
     print(f"總報酬率: {(total_pnl / initial_balance) * 100:.2f}%")
     print(f"總交易次數: {total_trades}")
     print(f"勝率 (Win Rate): {win_rate:.2f}%")
+    print(f"Sharpe Ratio: {sr_annual:.2f}")
+    print(f"Max Drawdown: {mdd:.2f}%")
+
+    # 中文字型
+    plt.rc('font', family='MingLiu')
 
     plt.figure(figsize=(12, 6))
-    plt.plot(equity_curve)
+    plt.plot(equity_curve, label='Entry Model', color='red')
+    plt.plot(bh_curve, label='Buy & Hold', color='gray', linestyle='--')
     plt.title(f'策略權益曲線 (Equity Curve) - {symbol}')
-    plt.xlabel('5m K 棒 (時間步)')
+    plt.xlabel(f'{config.ENTRY_MODEL_TIMEFRAME} K 棒 (時間步)')
     plt.ylabel('淨值 (USD)')
     plt.grid(True)
+    plt.legend()
     plt.show()
 
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='執行雙模型策略回測')
     parser.add_argument('-s', '--symbol', type=str, required=True, help='要回測的交易對')
+    parser.add_argument('--start', type=str, help='回測起始日期 (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, help='回測結束日期 (YYYY-MM-DD)')
     args = parser.parse_args()
     
     models_data = load_models_and_configs(

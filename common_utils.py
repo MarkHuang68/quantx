@@ -7,27 +7,33 @@ import pandas as pd
 import ta
 import numpy as np
 import time
+import talib
 import config  # <--- *** 1. 引用您的「設定檔」 ***
 
-def fetch_data(symbol, timeframe, total_limit):
-    """
-    從 Coinbase 獲取大量 OHLCV 資料 (使用迴圈)。
-    """
-    print(f"--- 步驟 1: 正在獲取 {symbol} {timeframe} 資料 (目標 {total_limit} 筆) ---")
-    exchange = ccxt.coinbase({'rateLimit': 1200, 'enableRateLimit': True})
+def fetch_data(symbol, timeframe, start_date=None, end_date=None, total_limit=None):
+    print(f"--- 正在獲取 {symbol} {timeframe} 資料 ---")
+    exchange = ccxt.bybit({'rateLimit': 1200, 'enableRateLimit': True})
     
-    limit_per_request = 300 # Coinbase max limit is 300
+    timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
+    limit_per_request = 1000
     all_ohlcv = []
-
-    needed_limit = total_limit
-
-    while needed_limit > 0:
+    
+    if start_date:
+        since_timestamp = int(pd.to_datetime(start_date).timestamp() * 1000)
+    else:
+        since_timestamp = exchange.milliseconds() - (total_limit * timeframe_ms) if total_limit else None
+    
+    end_timestamp = int(pd.to_datetime(end_date).timestamp() * 1000) if end_date else None
+    
+    while True:
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=min(needed_limit, limit_per_request))
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=since_timestamp, limit=limit_per_request)
             if not ohlcv: break
-            all_ohlcv = ohlcv + all_ohlcv
-            needed_limit -= len(ohlcv)
-
+            all_ohlcv.extend(ohlcv)
+            last_timestamp = ohlcv[-1][0]
+            since_timestamp = last_timestamp + timeframe_ms
+            if end_timestamp and last_timestamp >= end_timestamp: break
+            time.sleep(1)  # 避免rate limit
         except Exception as e:
             print(f"獲取資料時發生未知錯誤: {e}")
             time.sleep(5)
@@ -35,28 +41,38 @@ def fetch_data(symbol, timeframe, total_limit):
     if not all_ohlcv: return None
     df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
     df = df.drop_duplicates(subset=['timestamp'])
-    if len(df) > total_limit: df = df.tail(total_limit)
     df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
     df.set_index('timestamp', inplace=True)
     for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
         df[col] = pd.to_numeric(df[col], errors='coerce')
+    
+    if end_timestamp:
+        df = df[df.index <= pd.to_datetime(end_timestamp, unit='ms')]
+    
+    if total_limit and len(df) > total_limit:
+        df = df.tail(total_limit)
+    
     print("DataFrame 處理完成。")
     return df
-
 def create_features_trend(df, ema=20, sma=60, rsi=14, bbands=10):
     """
-    (模型 B) 1h 趨勢特徵。
+    (模型 B) 趨勢特徵。
     *** 您的「黃金配方」就「寫死」在這裡 ***
     """
-    print("\n--- 正在計算「1h 趨勢特徵」(黃金配方) ---")
-    try:
-        df['EMA'] = ta.trend.ema_indicator(df['Close'], window=20)
-        df['SMA'] = ta.trend.sma_indicator(df['Close'], window=60)
-        df['Maybe'] = (df['EMA'] > df['SMA']).astype(int)
-        df['RSI'] = ta.momentum.rsi(df['Close'], window=14)
+    if df is None:
+        return None, None
+    
+    print("\n--- 正在計算「趨勢特徵」---")
 
-        bb = ta.volatility.BollingerBands(close=df['Close'], window=10, window_dev=2)
-        df['BB_Width'] = bb.bollinger_wband()
+    try:
+        close_prices = df['Close'].values.astype(float)
+        
+        df['EMA'] = talib.EMA(close_prices, timeperiod=20)
+        df['SMA'] = talib.SMA(close_prices, timeperiod=60)
+        df['Maybe'] = (df['EMA'] > df['SMA']).astype(int)
+        df['RSI'] = talib.RSI(close_prices, timeperiod=14)
+        upperband, middleband, lowerband = talib.BBANDS(close_prices, timeperiod=10, nbdevup=2, nbdevdn=2, matype=0)
+        df['BB_Width'] = (upperband - lowerband) / (middleband + 1e-10)
         
         df_features = df.dropna() 
 
@@ -70,36 +86,118 @@ def create_features_trend(df, ema=20, sma=60, rsi=14, bbands=10):
 
         return df_features, features_list
     except Exception as e:
-        print(f"計算 1h 特徵時發生錯誤: {e}")
+        print(f"計算趨勢特徵時發生錯誤: {e}")
         return None, None
 
 def create_features_entry(df):
     """
-    (模型 A) 5m 進場特徵 (報酬率預測模型)。
+    (模型 A) 進場特徵 (報酬率預測模型)。
     """
     if df is None:
         return None, None
         
-    print("\n--- 正在計算「5m 進場特徵」---")
+    print("\n--- 正在計算「進場特徵」---")
+
+    close_prices = df['Close'].values.astype(float)
+    high_prices = df['High'].values.astype(float)
+    low_prices = df['Low'].values.astype(float)
+    volume = df['Volume'].values.astype(float)
+    close_sma = talib.SMA(close_prices, 4)
+    df['Close_SMA'] = close_sma
 
     try:
-        # --- 時間特徵 ---
+        ema = talib.EMA(close_prices, timeperiod=20)
         df['HOUR'] = df.index.hour
+        df['D_OF_W'] = df.index.dayofweek
         df['MONTH'] = df.index.month
+        df['EMA'] = ema
+        df['CLOSE_EMA'] = (close_prices - ema) / ema
+        df['ATR'] = talib.ATR(high_prices, low_prices, close_prices, timeperiod=14)
+        df['RSI'] = talib.RSI(close_prices, timeperiod=14)
+        df['MOM'] = talib.MOM(close_prices, timeperiod=10)
+        df['ADX'] = talib.ADX(high_prices, low_prices, close_prices)
+        df['ADX_hist'] = talib.PLUS_DI(high_prices, low_prices, close_prices) - talib.MINUS_DI(high_prices, low_prices, close_prices)
+        df['ADX_hist_ema'] = talib.EMA(df['ADX_hist'], 10)
+        df['WILLR'] = talib.WILLR(high_prices, low_prices, close_prices, timeperiod=20)
 
-        # --- TA 指標 ---
-        df = ta.add_all_ta_features(df, open="Open", high="High", low="Low", close="Close", volume="Volume", fillna=True)
+        df['KDJ_K'], df['KDJ_D'] = talib.STOCH(
+                                    high_prices, 
+                                    low_prices, 
+                                    close_prices, 
+                                    fastk_period=9,
+                                    slowk_period=3,
+                                    slowk_matype=0, # 設為 0 使用 SMA
+                                    slowd_period=3,
+                                    slowd_matype=0  # 設為 0 使用 SMA
+                                    )
+        df['KDJ_J'] = (3 * df['KDJ_K']) - (2 * df['KDJ_D'])
+        
+        df['MACD'], df['MACD_signal'], df['MACD_hist'] = talib.MACD(close_prices, 
+                                                                    fastperiod=12, 
+                                                                    slowperiod=26, 
+                                                                    signalperiod=9)
 
-        df['Close_SMA'] = ta.trend.sma_indicator(df['Close'], window=3)
-        df['EMA'] = ta.trend.ema_indicator(df['Close'], window=20)
-        df['CLOSE_EMA'] = (df['Close'] - df['EMA']) / df['EMA']
+        upperband, middleband, lowerband = talib.BBANDS(close_prices, 
+                                                        timeperiod=20, 
+                                                        nbdevup=2, 
+                                                        nbdevdn=2, 
+                                                        matype=0)
+        
+        df['BB_Width'] = (upperband - lowerband) / (middleband + 1e-10)
+        df['BB_Percent'] = (close_prices - lowerband) / (upperband - lowerband + 1e-10)
+
+        df['OBV'] = talib.OBV(close_prices, volume)
+        df['VOLUME_CHANGE'] = df['Volume'].pct_change()
+        df['VOLUME_CHANGE'].replace([np.inf, -np.inf], np.nan, inplace=True)
+
+        # 以下是幫助ML學習忽略抄襲
+
+        # 平穩化: 用對數 Close (轉換價格為對數，使序列更平穩，減低極端波動影響，幫助模型捕捉百分比變化)
+        df['log_close'] = np.log(df['Close'])
+
+        # 加滯後特徵 (加入1-5期滯後報酬，捕捉時間依賴，讓模型學習序列模式，避免只抄當前值)
+        for lag in range(1, 6):
+            df[f'lag_return_{lag}'] = df['Close'].pct_change().shift(lag)
+
+        # 加波動率 (計算14期標準差，測量價格波動，提供風險信號，幫助預測轉折或趨勢強度)
+        df['volatility'] = df['Close'].rolling(14).std()
 
         # --- (特徵列表) ---
         features_list = [
-            'HOUR', 'MONTH', 'EMA', 'CLOSE_EMA', 'volatility_atr', 'momentum_rsi',
-            'trend_adx', 'trend_adx_pos', 'trend_adx_neg', 'momentum_stoch', 'momentum_stoch_signal',
-            'trend_macd', 'trend_macd_signal', 'trend_macd_diff', 'volatility_bbw', 'volatility_bbp',
-            'volume_obv', 'Volume', 'volume_cmf'
+            'HOUR',
+            # 'D_OF_W',
+            'MONTH',
+
+            'EMA',
+            'CLOSE_EMA',
+            'ATR',
+            'RSI',
+            'MOM',
+            'ADX',
+            'ADX_hist',
+            'ADX_hist_ema',
+            'WILLR',
+            'KDJ_K',
+            'KDJ_D',
+            'KDJ_J',
+
+            'MACD', 'MACD_signal',
+            'MACD_hist',
+            
+            'BB_Width',
+            'BB_Percent',
+
+            'OBV',
+            'Volume',
+            'VOLUME_CHANGE',
+
+            'log_close',
+            'lag_return_1',
+            'lag_return_2',
+            'lag_return_3',
+            'lag_return_4',
+            'lag_return_5',
+            'volatility'
         ]
 
         df_features = df.dropna()

@@ -31,7 +31,7 @@ def get_entry_model_path(symbol, version):
     return os.path.join(MODEL_DIR, f"entry_model_XGB_{symbol_str}_v{version}.json")
 
 # --- 4. 模型 B (1h 趨勢模型) 的「版本控制」 ---
-TREND_MODEL_TIMEFRAME = '1h'
+TREND_MODEL_TIMEFRAME = '15m'
 TREND_MODEL_TRAIN_LIMIT = 30000 
 TREND_MODEL_BACKTEST_LIMIT = 1000
 TREND_MODEL_VERSION = "1.0" # <-- *** 版本號 ***

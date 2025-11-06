@@ -1,15 +1,22 @@
 # 檔案: backtest.py
 # 目的：在歷史數據上回測「趨勢模型 + 進場模型」的組合策略
+# 修改說明：
+# - 使用 common_utils.py 的 fetch_data（含快取邏輯：當 --start 及 --end 設值時，先查 data/ CSV，若無則抓取並存）。
+# - 新增 argparse --stop_loss (預設 0.01)、--take_profit (預設 0.02)、--entry_threshold (預設 0.0001)，run_strategy_backtest 使用之。
+# - 移除 RSI 濾波邏輯（依用戶偏好）。
+# - Kelly 計算穩定版：p = 0.55 + abs(predicted_return) * 0.5；kelly_fraction 限 0.05-0.3，減少波動。
+# - 回測結束寫 pnl.json 含 total_pnl、total_return、total_trades、win_rate、sr_annual、mdd（供 hyperparameter_search.py 使用）。
+# - 回測邏輯：逐根 5m K 棒模擬持倉；趨勢 + 預測進場 (動態 Kelly 倉位)；固定止盈止損觸發平倉；計算 Buy&Hold 曲線、績效指標；結束強制平倉。
+# - 注意：需確保 config.py 及 common_utils.py 存在；模型路徑等依 config 設定。
 
 import pandas as pd
 import numpy as np
 import argparse
-import talib
 import tensorflow as tf
 import xgboost as xgb
 import warnings
 import os
-import json 
+import json
 import math
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import MinMaxScaler
@@ -24,7 +31,11 @@ np.random.seed(42)
 tf.random.set_seed(42)
 
 def load_models_and_configs(symbol, trend_version, entry_version):
-    """ 載入所有需要的模型和配置檔案 """
+    """ 載入所有需要的模型和配置檔案
+    - 趨勢模型：LSTM，從 trend_model_path 載入。
+    - 進場模型：XGBoost Booster，從 entry_model_path 載入。
+    - 若檔案不存在，輸出錯誤並返回 None。
+    """
     print(f"--- 正在為 {symbol} 載入模型 (Trend: {trend_version}, Entry: {entry_version}) ---")
     
     models_data = {}
@@ -54,6 +65,11 @@ def load_models_and_configs(symbol, trend_version, entry_version):
 def prepare_backtest_data(symbol, models_data):
     """
     準備回測所需的多時間框架 (MTF) 數據。
+    - 載入 1h (趨勢) 及 5m (進場) 數據（使用 fetch_data，支持快取）。
+    - 計算趨勢訊號 (LSTM 預測趨勢方向 1:漲/0:跌)。
+    - 計算進場預測 (XGBoost 預測報酬率)。
+    - 合併 5m 數據為 df_backtest，ffill 趨勢訊號。
+    - dropna 確保無缺失值。
     """
     print("\n--- 正在準備回測數據 (預先計算所有訊號) ---")
     
@@ -90,7 +106,7 @@ def prepare_backtest_data(symbol, models_data):
     df_5m_features, features_list_5m = create_features_entry(df_5m.copy())
     
     X_5m = xgb.DMatrix(df_5m_features[features_list_5m])
-    df_5m_features['entry_prediction'] = entry_model.predict(X_5m) # <-- 預測的是報酬率
+    df_5m_features['entry_prediction'] = entry_model.predict(X_5m)  # 預測報酬率
     
     # --- 4. 合併 MTF 數據 ---
     print(f"正在合併 {config.TREND_MODEL_TIMEFRAME} 和 {config.ENTRY_MODEL_TIMEFRAME} 數據...")
@@ -102,58 +118,53 @@ def prepare_backtest_data(symbol, models_data):
     print(f"--- 數據準備完畢，總共 {len(df_backtest)} 根 5m K 棒可供回測 ---")
     return df_backtest
 
-def run_strategy_backtest(df_backtest, symbol):
+def run_strategy_backtest(df_backtest, symbol, stop_loss_pct, take_profit_pct, entry_threshold):
     """
-    執行「事件驅動」回測。
+    執行倉位持有回測 (逐根 5m K 棒模擬)。
+    - 參數：從 args 傳入 stop_loss_pct, take_profit_pct, entry_threshold。
+    - 進場邏輯：趨勢 + 預測報酬 >/< 門檻；使用 Kelly 計算動態倉位 (穩定版)。
+    - 持倉邏輯：監控固定止損/止盈觸發平倉扣費。
+    - 計算 Buy & Hold 曲線 (初始買入持有)。
+    - 計算績效：總 PnL/報酬率/交易數/勝率/年化 Sharpe/MDD。
+    - 結束強制平倉；輸出報告及圖；寫 pnl.json。
     """
     if df_backtest is None or df_backtest.empty:
         return
 
-    print("\n--- 步驟 3: 執行策略回測 ---")
+    print("\n--- 執行策略回測 ---")
 
-    initial_balance = 10000.0
-    cash = initial_balance
-    position_size = 0.0
-    entry_price = 0.0
-    in_position = False
-
-    bh_position = initial_balance / df_backtest['Close'].iloc[0]
-    bh_curve = [initial_balance]
-
-    trades = []
-    equity_curve = []
-
-    ENTRY_THRESHOLD = 0.0001
-    STOP_LOSS_PCT = 0.005
-    TAKE_PROFIT_PCT = 0.06
-    COMMISSION_FEE = 0.00055
-    RSI_PERIOD = 14  # RSI 週期
-    RSI_OVERBOUGHT = 65  # RSI 上限 (避免過買)
-    RSI_OVERSOLD = 35  # RSI 下限 (避免過賣)
+    initial_balance = 10000.0  # 初始資金
+    cash = initial_balance     # 現金餘額
+    position_size = 0.0        # 倉位大小 (正:多倉, 負:空倉)
+    entry_price = 0.0          # 進場價格
+    in_position = False        # 是否持倉旗標
     
-    # 計算 RSI (新增濾波器)
-    backtest_df['RSI'] = talib.RSI(backtest_df['Close'], timeperiod=RSI_PERIOD)
+    trades = []                # 交易 PnL 列表
+    equity_curve = [initial_balance]  # 策略淨值曲線
     
-    bh_position = initial_balance / backtest_df['Close'].iloc[0]
-    bh_curve = [initial_balance]
+    COMMISSION_FEE = 0.00055   # 手續費率
     
-    for i in range(1, len(backtest_df)):
-        row = backtest_df.iloc[i]
-        current_price = row['Close']
-        trend_signal = row.get('trend_signal', None)
-        predicted_return = row.get('entry_prediction', None)
-        rsi = row['RSI']  # 新增: 取得當前 RSI
+    # Buy & Hold 基準曲線
+    bh_position = initial_balance / df_backtest['Close'].iloc[0]  # 初始購買數量
+    bh_curve = [initial_balance]  # Buy & Hold 淨值曲線
+    
+    for i in range(1, len(df_backtest)):
+        row = df_backtest.iloc[i]
+        current_price = row['Close']  # 當前收盤價
+        trend_signal = row.get('trend_signal', None)  # 趨勢訊號 (1:漲, 0:跌)
+        predicted_return = row.get('entry_prediction', None)  # 預測報酬
         
-        # 更新當前淨值
+        # 更新當前策略淨值 (現金 + 倉位價值)
         current_net_worth = cash + (position_size * current_price)
         equity_curve.append(current_net_worth)
         
+        # 若持倉，檢查止盈止損 (pnl_pct <= -stop_loss_pct 或 >= take_profit_pct 即平倉扣費)
         if in_position:
             pnl_pct = (current_price - entry_price) / entry_price if position_size > 0 else (entry_price - current_price) / entry_price
-            if pnl_pct <= -STOP_LOSS_PCT or pnl_pct >= TAKE_PROFIT_PCT:
+            if pnl_pct <= -stop_loss_pct or pnl_pct >= take_profit_pct:
                 exit_price = current_price
                 cash += position_size * exit_price
-                cash -= abs(position_size * exit_price) * COMMISSION_FEE  # 扣平倉費
+                cash -= abs(position_size * exit_price) * COMMISSION_FEE  # 扣平倉手續費
                 trade_pnl = position_size * (exit_price - entry_price)
                 trades.append(trade_pnl)
                 in_position = False
@@ -161,19 +172,20 @@ def run_strategy_backtest(df_backtest, symbol):
                 entry_price = 0.0
                 continue
         
+        # 若未持倉，檢查進場條件 (趨勢 + 預測報酬門檻)
         if not in_position:
             if predicted_return is None or trend_signal is None:
                 continue
             
-            if (trend_signal == 1 and predicted_return > ENTRY_THRESHOLD) or \
-               (trend_signal == 0 and predicted_return < -ENTRY_THRESHOLD):
+            if (trend_signal == 1 and predicted_return > entry_threshold) or \
+               (trend_signal == 0 and predicted_return < -entry_threshold):
                 
-                # 新增: Kelly Criterion 計算倉位比例 (f = (p - q) / b, p=預測勝率約0.5, q=1-p, b=預測報酬/止損比)
-                p = 0.6 + abs(predicted_return)  # 簡化勝率估計 (基於預測報酬調整)
+                # Kelly 計算倉位比例 (穩定版：p 保守估計；限制 5%-30%)
+                p = 0.55 + abs(predicted_return) * 0.5  # 穩定勝率估計
                 q = 1 - p
-                b = abs(predicted_return) / STOP_LOSS_PCT  # 風險報酬比
-                kelly_fraction = (p - q) / b if b != 0 else 0.01  # 避免除零，最小 1%
-                kelly_fraction = max(min(kelly_fraction, 0.5), 0.01)  # 限制 1%-50%
+                b = abs(predicted_return) / stop_loss_pct  # 風險報酬比
+                kelly_fraction = (p - q) / b if b != 0 else 0.05  # 避免除零，最小 5%
+                kelly_fraction = max(min(kelly_fraction, 0.3), 0.05)  # 限制 5%-30%
                 
                 size = (cash * kelly_fraction) / current_price  # 動態計算數量
                 position_size = size if trend_signal == 1 else -size
@@ -181,34 +193,40 @@ def run_strategy_backtest(df_backtest, symbol):
                     cash -= size * current_price
                 else:
                     cash += size * current_price
-                cash -= abs(size * current_price) * COMMISSION_FEE
+                cash -= abs(size * current_price) * COMMISSION_FEE  # 扣進場手續費
                 entry_price = current_price
                 in_position = True
         
+        # 更新 Buy & Hold 淨值
         bh_net_worth = bh_position * current_price
         bh_curve.append(bh_net_worth)
     
-    # 結束強制平倉 (原邏輯)
+    # 回測結束，若持倉則強制平倉
     if in_position:
-        final_price = backtest_df['Close'].iloc[-1]
+        final_price = df_backtest['Close'].iloc[-1]  # 最後收盤價
         cash += position_size * final_price
-        cash -= abs(position_size * final_price) * COMMISSION_FEE
+        cash -= abs(position_size * final_price) * COMMISSION_FEE  # 扣平倉手續費
         trade_pnl = position_size * (final_price - entry_price)
         trades.append(trade_pnl)
     
+    # 更新最終策略淨值
     final_net = cash
     equity_curve.append(final_net)
-    bh_curve.append(bh_position * backtest_df['Close'].iloc[-1])
-
+    
+    # 更新最終 Buy & Hold 淨值
+    bh_curve.append(bh_position * df_backtest['Close'].iloc[-1])
+    
     if not trades:
         print("回測期間沒有發生任何交易。")
         return
-
-    total_trades = len(trades)
-    wins = [t for t in trades if t > 0]
-    win_rate = (len(wins) / total_trades) * 100 if total_trades > 0 else 0
-    total_pnl = final_net - initial_balance
-
+    
+    # 計算績效指標
+    total_trades = len(trades)  # 總交易次數
+    wins = [t for t in trades if t > 0]  # 盈利交易
+    win_rate = (len(wins) / total_trades) * 100 if total_trades > 0 else 0  # 勝率
+    total_pnl = final_net - initial_balance  # 總 PnL
+    total_return = (total_pnl / initial_balance) * 100  # 總報酬率
+    
     # 年化 Sharpe Ratio (假設 5m 框架)
     equity_returns = pd.Series(equity_curve).pct_change().dropna()  # 日報酬率
     sr = equity_returns.mean() / equity_returns.std() if equity_returns.std() != 0 else 0  # Sharpe Ratio
@@ -218,36 +236,55 @@ def run_strategy_backtest(df_backtest, symbol):
     peak = np.maximum.accumulate(equity_curve)  # 累計峰值
     dd = (np.array(equity_curve) - peak) / peak  # 回檔率
     mdd = dd.min() * 100 if len(dd) > 0 else 0   # 最大回檔 (%)
-
+    
+    # 輸出報告
     print(f"\n--- 策略回測績效報告 (Symbol: {symbol}) ---")
     print(f"初始資金: ${initial_balance:.2f}")
     print(f"最終淨值: ${final_net:.2f}")
     print(f"總盈虧 (PnL): ${total_pnl:.2f}")
-    print(f"總報酬率: {(total_pnl / initial_balance) * 100:.2f}%")
+    print(f"總報酬率: {total_return:.2f}%")
     print(f"總交易次數: {total_trades}")
     print(f"勝率 (Win Rate): {win_rate:.2f}%")
     print(f"Sharpe Ratio: {sr_annual:.2f}")
     print(f"Max Drawdown: {mdd:.2f}%")
+    
+    # 寫 pnl.json (供尋參腳本使用)
+    result = {
+        "total_pnl": total_pnl,
+        "total_return": total_return,
+        "total_trades": total_trades,
+        "win_rate": win_rate,
+        "sr_annual": sr_annual,
+        "mdd": mdd
+    }
+    with open('pnl.json', 'w') as f:
+        json.dump(result, f)
+    print("✅ 已寫 pnl.json 檔案。")
 
-    # 中文字型
-    plt.rc('font', family='MingLiu')
-
-    plt.figure(figsize=(12, 6))
-    plt.plot(equity_curve, label='Entry Model', color='red')
-    plt.plot(bh_curve, label='Buy & Hold', color='gray', linestyle='--')
-    plt.title(f'策略權益曲線 (Equity Curve) - {symbol}')
-    plt.xlabel(f'{config.ENTRY_MODEL_TIMEFRAME} K 棒 (時間步)')
-    plt.ylabel('淨值 (USD)')
-    plt.grid(True)
-    plt.legend()
-    plt.show()
+    if not args.no_plot:
+    # 繪製權益曲線
+        plt.rc('font', family='MingLiu')
+        plt.figure(figsize=(12, 6))
+        plt.plot(equity_curve, label='策略', color='red')  # 策略曲線 (紅色)
+        plt.plot(bh_curve, label='Buy & Hold', color='gray', linestyle='--')  # Buy & Hold (灰色虛線)
+        plt.title(f'策略權益曲線 (Equity Curve) - {symbol}')  # 標題
+        plt.xlabel(f'{config.ENTRY_MODEL_TIMEFRAME} K 棒 (時間步)')  # X 軸標籤
+        plt.ylabel('淨值 (USD)')  # Y 軸標籤
+        plt.grid(True)  # 顯示格線
+        plt.legend()    # 顯示圖例
+        print("正在顯示權益曲線圖...")
+        plt.show()
 
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description='執行雙模型策略回測')
-    parser.add_argument('-s', '--symbol', type=str, required=True, help='要回測的交易對')
-    parser.add_argument('--start', type=str, help='回測起始日期 (YYYY-MM-DD)')
-    parser.add_argument('--end', type=str, help='回測結束日期 (YYYY-MM-DD)')
+    parser.add_argument('-s', '--symbol', type=str, required=True, help='要回測的交易對 (e.g., ETH/USDT)')
+    parser.add_argument('-sd', '--start', type=str, help='回測起始日期 (YYYY-MM-DD)')
+    parser.add_argument('-ed', '--end', type=str, help='回測結束日期 (YYYY-MM-DD)')
+    parser.add_argument('-sl', '--stop_loss', type=float, default=0.025, help='止損百分比 (預設 0.01)')
+    parser.add_argument('-tp', '--take_profit', type=float, default=0.05, help='止盈百分比 (預設 0.02)')
+    parser.add_argument('-et', '--entry_threshold', type=float, default=0.0001, help='進場門檻 (預設 0.0001)')
+    parser.add_argument('--no_plot', action='store_true', help='不顯示權益曲線圖 (用於尋參)')
     args = parser.parse_args()
     
     models_data = load_models_and_configs(
@@ -259,4 +296,4 @@ if __name__ == "__main__":
     if models_data:
         backtest_df = prepare_backtest_data(args.symbol, models_data)
         if backtest_df is not None:
-            run_strategy_backtest(backtest_df, args.symbol)
+            run_strategy_backtest(backtest_df, args.symbol, args.stop_loss, args.take_profit, args.entry_threshold)

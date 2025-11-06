@@ -2,6 +2,7 @@
 # 這裡是「唯一」的特徵工程函數 (您「寫死」的黃金配方)
 # 您的「訓練」和「實盤」腳本都會 100% 引用這裡
 
+import os
 import ccxt
 import pandas as pd
 import ta
@@ -11,9 +12,27 @@ import talib
 import config  # <--- *** 1. 引用您的「設定檔」 ***
 
 def fetch_data(symbol, timeframe, start_date=None, end_date=None, total_limit=None):
+    """ 獲取 OHLCV 資料（含快取邏輯）。
+    - 若 start_date 及 end_date 皆設，先查本地 data/ CSV。
+    - 無則抓取並存至 data/{symbol_safe}_{timeframe}_{start_date}_{end_date}.csv。
+    - 確保 data/ 存在。
+    """
     print(f"--- 正在獲取 {symbol} {timeframe} 資料 ---")
-    exchange = ccxt.bybit({'rateLimit': 1200, 'enableRateLimit': True})
+    symbol_safe = symbol.replace('/', '')  # 安全檔名，如 ETHUSDT
     
+    cache_file = None
+    if start_date and end_date:
+        cache_dir = 'data'
+        os.makedirs(cache_dir, exist_ok=True)  # 確保目錄存在
+        cache_file = os.path.join(cache_dir, f"{symbol_safe}_{timeframe}_{start_date}_{end_date}.csv")
+        
+        if os.path.exists(cache_file):
+            print(f"✅ 找到快取 {cache_file}，載入中...")
+            df = pd.read_csv(cache_file, index_col='timestamp', parse_dates=True)
+            print("DataFrame 從快取載入完成。")
+            return df
+
+    exchange = ccxt.bybit({'rateLimit': 1200, 'enableRateLimit': True})
     timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
     limit_per_request = 1000
     all_ohlcv = []
@@ -33,9 +52,9 @@ def fetch_data(symbol, timeframe, start_date=None, end_date=None, total_limit=No
             last_timestamp = ohlcv[-1][0]
             since_timestamp = last_timestamp + timeframe_ms
             if end_timestamp and last_timestamp >= end_timestamp: break
-            time.sleep(1)  # 避免rate limit
+            time.sleep(1)  # 避免 rate limit
         except Exception as e:
-            print(f"獲取資料時發生未知錯誤: {e}")
+            print(f"獲取錯誤: {e}")
             time.sleep(5)
     
     if not all_ohlcv: return None
@@ -52,8 +71,13 @@ def fetch_data(symbol, timeframe, start_date=None, end_date=None, total_limit=No
     if total_limit and len(df) > total_limit:
         df = df.tail(total_limit)
     
+    if cache_file:
+        print(f"✅ 保存快取至 {cache_file}")
+        df.to_csv(cache_file)
+    
     print("DataFrame 處理完成。")
     return df
+
 def create_features_trend(df, ema=20, sma=60, rsi=14, bbands=10):
     """
     (模型 B) 趨勢特徵。

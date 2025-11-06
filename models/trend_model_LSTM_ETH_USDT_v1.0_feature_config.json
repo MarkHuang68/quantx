@@ -1,6 +1,6 @@
 {
-    "ema": 20,
+    "ema": 10,
     "sma": 20,
-    "rsi": 7,
-    "bbands": 2
+    "rsi": 14,
+    "bbands": 8
 }

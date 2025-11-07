@@ -1,304 +1,310 @@
 # 檔案: train_trend_model.py
-import json
-import warnings
+
 import pandas as pd
 import numpy as np
 import argparse
-import matplotlib.pyplot as plt
+import xgboost as xgb
+import warnings
 import os
+import json
+import math
+from sklearn.metrics import accuracy_score
+from sklearn.model_selection import RandomizedSearchCV, TimeSeriesSplit
+from scipy.stats import uniform, randint
+import matplotlib.pyplot as plt  # 用於繪圖
+from sklearn.metrics import ConfusionMatrixDisplay
+from imblearn.over_sampling import SMOTE  # 新增: 用於過採樣平衡類別
 
 # --- 1. 引用「設定檔」和「共用工具箱」 ---
 import config
-from common_utils import fetch_data, create_features_trend, create_sequences
-from hyperparameter_search import SearchIterator
+from common_utils import fetch_data, create_features_trend
 
-# --- (匯入所有 Keras/Sklearn 工具) ---
-import tensorflow as tf
-from keras.models import Sequential
-from keras.layers import LSTM, Dense, Dropout, Bidirectional
-from sklearn.preprocessing import MinMaxScaler
-from sklearn.metrics import accuracy_score, classification_report, ConfusionMatrixDisplay
-
-# (設置 Keras/Tensorflow 的隨機種子)
-tf.random.set_seed(42)
-np.random.seed(42)
 warnings.simplefilter(action='ignore', category=FutureWarning)
-#ema=20, sma=60, rsi=14, bbands=10
-# --- 您的尋參空間 (保持不變) ---
-TREND_SEARCH_SPACE = {
-    'ema': [5, 20, 5],
-    'sma': [20, 100, 20],
-    'rsi': [7, 14, 7],
-    'bbands': [2, 8, 6]
+
+# --- XGBoost 訓練基礎參數 (分類模型, 添加 class_weight='balanced' 處理不平衡) ---
+XGB_BASE_PARAMS = {
+    'n_estimators': 1000,
+    'learning_rate': 0.013142918568673426,
+    'objective': 'binary:logistic',
+    'eval_metric': 'logloss',
+    'n_jobs': -1,
+    'random_state': 42,
+    'early_stopping_rounds': 10,
+    'max_depth': 3,
+    'reg_alpha': 3.143559810763267,
+    'reg_lambda': 5.085706911647028,
+    'colsample_bytree': 0.6431565707973218,
+    'subsample': 0.9630265895704372,
 }
 
-# --- 您的 LSTM 訓練參數 (保持不變) ---
-LSTM_BASE_PARAMS = {
-    'epochs': 50,
-    'batch_size': 64,
-    'shuffle': False,
-    'callbacks': [tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True)]
+# --- 超參數調校範圍 ---
+PARAM_DIST = {
+    'max_depth': randint(3, 8),
+    'learning_rate': uniform(0.01, 0.1),
+    'subsample': uniform(0.6, 0.4),
+    'colsample_bytree': uniform(0.6, 0.4),
+    'reg_lambda': uniform(0, 10),
+    'reg_alpha': uniform(0, 10)
 }
 
-def build_and_train_lstm(df_features, features_list):
+def train_xgb_classifier(df_features, features_list):
     """
-    (這是我們 90.9% 的冠軍模型訓練邏輯)
+    訓練 XGBoost 分類模型 (預測漲跌: 1=漲, 0=跌)
+    - 計算 target = (Close.shift(-1) > Close).astype(int)  # 漲跌二元標籤
+    - 分割訓練/測試集 (80/20)
+    - 使用 SMOTE 過採樣訓練集平衡類別 (減緩漲偏多問題)
+    - 若不關閉調校: 使用 RandomizedSearchCV 調校超參數 (TimeSeriesSplit 交叉驗證)
+    - 否則: 直接 fit (傳 eval_set 啟用 early stopping)
+    - 評估測試集準確率 (accuracy_score)
+    - 打印特徵重要性排行 (feature_importances_)
+    - 高信心回測: 篩選信心 > threshold 的預測，計算準確率並繪製混淆矩陣 (threshold=0.55, 0.60, 0.65)
+    - 向量化回測: 
+      - 產生 signal (y_pred_proba > 0.5 = 1 (買), else 0)
+      - 計算 strategy_return = signal.shift(1) * actual_return  # 毛收益
+      - 計算 transaction_costs = trades * FEE_RATE  # 手續費
+      - 計算 strategy_net_return = strategy_return - transaction_costs  # 淨收益
+      - 計算 strategy_gross_equity = (1 + strategy_return).cumprod()  # 未扣費淨值曲線
+      - 計算 strategy_net_equity = (1 + strategy_net_return).cumprod()  # 扣費後淨值曲線
+      - 計算 bh_equity = (1 + actual_return).cumprod()  # Buy&Hold 淨值曲線
+      - 繪製三條曲線: 策略 (未扣費, 扣費後), Buy&Hold
+    - 返回模型及準確率
     """
-    if df_features is None: return None, 0.0, None, None
+    if df_features is None: return None, 0.0
 
-    # --- 2. 從「設定檔」讀取所有參數 ---
-    P = config.TREND_MODEL_PARAMS
-    lookback_window = P['LOOKBACK_WINDOW']
-    forecast_horizon = P['FORECAST_HORIZON']
-    u1, u2, d1 = P['LSTM_UNITS_1'], P['LSTM_UNITS_2'], P['DENSE_UNITS']
-
-    # 1. 定義特徵和目標 (必須 100% 匹配 common_utils.py)
-
+    # --- 數據準備 (Target) ---
     df_model = df_features.copy()
+    # *** 核心修改: Target 改為漲跌分類 (1=漲, 0=跌) ***
+    df_model['target'] = (df_model['Close'].shift(-1) > df_model['Close'].shift(2)).astype(int)
+    df_model = df_model.dropna()
+
+    # 2. 獲取 X 和 Y
+    X = df_model[features_list]
+    y = df_model['target']
+
+    # 3. 分割訓練/測試集
+    split_index = int(len(X) * 0.8)  # 80% 訓練, 20% 測試
+    X_train, X_test = X.iloc[:split_index], X.iloc[split_index:]
+    y_train, y_test = y.iloc[:split_index], y.iloc[split_index:]
+
+    # 新增: 使用 SMOTE 過採樣訓練集 (平衡漲/跌樣本)
+    print("\n--- 使用 SMOTE 平衡訓練集類別 ---")
+    smote = SMOTE(random_state=42)
+    X_train_resampled, y_train_resampled = smote.fit_resample(X_train, y_train)
+    print(f"原訓練漲/跌: {sum(y_train == 1)}/{sum(y_train == 0)}")
+    print(f"平衡後漲/跌: {sum(y_train_resampled == 1)}/{sum(y_train_resampled == 0)}")
+
+    # 4. 超參數調校或直接訓練
+    xgb_clf = xgb.XGBClassifier(**XGB_BASE_PARAMS)
+
+    if not args.no_search_params:
+        print("\n--- 開始超參數調校 (分類模型，這會花費 5-15+ 分鐘...) ---")
+        xgb_clf.early_stopping_rounds = None
+        xgb_clf.feature_weights
+        
+        tscv = TimeSeriesSplit(n_splits=3)
+
+        random_search = RandomizedSearchCV(
+            estimator=xgb_clf,
+            param_distributions=PARAM_DIST,
+            n_iter=25,
+            cv=tscv,
+            scoring='accuracy',
+            n_jobs=-1,
+            verbose=2,
+            random_state=42
+        )
+        
+        random_search.fit(X_train_resampled, y_train_resampled)
+        xgb_clf = random_search.best_estimator_
+        print("\n--- 調校完成! ---")
+        print(f"最佳交叉驗證 (CV) 準確率: {random_search.best_score_:.2%}")
+        print("找到的最佳參數組合:")
+        print(random_search.best_params_)
+    else:
+        # 直接訓練 (傳 eval_set 啟用 early stopping)
+        print("\n--- 無調校，直接訓練模型 ---")
+        xgb_clf.fit(X_train_resampled, y_train_resampled, eval_set=[(X_test, y_test)], verbose=False)
+
+    # 5. 使用最佳模型評估測試集
+    y_pred_proba = xgb_clf.predict_proba(X_test)[:, 1]  # 漲機率 (用於 signal)
+    y_pred = (y_pred_proba > 0.5).astype(int)  # 二元預測
+
+    acc = accuracy_score(y_test, y_pred)
+    print(f"\n測試集準確率: {acc * 100:.2f}%")
+
+    # 6. 打印特徵重要性排行
+    features = X.columns
+    importances = xgb_clf.feature_importances_
+    feature_importance_df = pd.DataFrame({'Feature': features, 'Importance': importances})
+    feature_importance_df = feature_importance_df.sort_values(by='Importance', ascending=False)
+    print("\n--- 特徵重要性排行 ---")
+    print(feature_importance_df)
+
+    # 7. 高信心回測 (threshold=0.55, 0.60, 0.65)
+    evaluate_with_confidence(xgb_clf, X_test, y_test, threshold=0.55)
+    evaluate_with_confidence(xgb_clf, X_test, y_test, threshold=0.60)
+    evaluate_with_confidence(xgb_clf, X_test, y_test, threshold=0.65)
+
+    # --- 向量化回測 (計算收益曲線 vs Buy&Hold) ---
+    # 1. 計算實際報酬率 (用於回測收益)
+    df_test = df_model.iloc[split_index:].copy()  # 測試集資料
+    df_test['actual_return'] = df_test['Close'].pct_change().shift(-1)  # 下一根 K 棒報酬 (實際漲跌幅)
+
+    # 2. 產生訊號 (基於 y_pred_proba > 0.5 = 1 (買), else 0)
+    THRESHOLD = 0.65  # 分類機率門檻 (可調整)
+    # df_test['signal'] = np.where(y_pred_proba > THRESHOLD, 1, 0)  # 僅多頭 (漲預測 > 門檻 進場)
+    df_test['signal'] = 0
+    df_test.loc[y_pred_proba > THRESHOLD, 'signal'] = 1  # (信心做多)
+    df_test.loc[y_pred_proba < (1 - THRESHOLD), 'signal'] = -1 # (信心做空)
+
+    # 3. 計算策略毛收益 (signal.shift(1) * actual_return)
+    df_test['strategy_return'] = df_test['signal'].shift(1) * df_test['actual_return']
+
+    # 4. 計算手續費 (每次訊號變化扣費)
+    FEE_RATE = 0.00055  # 手續費率
+    df_test['trades'] = df_test['signal'].diff().abs().fillna(0)
+    df_test['transaction_costs'] = df_test['trades'] * FEE_RATE
+
+    # 5. 計算淨收益
+    df_test['strategy_net_return'] = df_test['strategy_return'] - df_test['transaction_costs']
+
+    # 6. 計算策略累計淨值 (從 1 開始累乘)
+    df_test['strategy_gross_equity'] = (1 + df_test['strategy_return']).cumprod()  # 未扣費淨值曲線
+    df_test['strategy_net_equity'] = (1 + df_test['strategy_net_return']).cumprod()  # 扣費後淨值曲線
+
+    # 7. 計算 Buy&Hold 累計淨值
+    df_test['bh_return'] = df_test['actual_return']
+    df_test['bh_equity'] = (1 + df_test['bh_return']).cumprod()
+
+    # 8. 繪製收益曲線 (三條: 未扣費策略、扣費策略、Buy&Hold)
+    plt.rc('font', family='MingLiu')  # 支援中文字型
+    plt.figure(figsize=(12, 6))
+    df_test['strategy_gross_equity'].plot(label='策略淨值 (未扣費)', color='green')  # 未扣費 (綠色)
+    df_test['strategy_net_equity'].plot(label='策略淨值 (扣費後)', color='red')  # 扣費後 (紅色)
+    df_test['bh_equity'].plot(label='Buy & Hold', color='gray', linestyle='--')  # Buy&Hold (灰色虛線)
+    plt.title('測試集回測收益曲線')
+    plt.xlabel('時間步')
+    plt.ylabel('累計淨值 (從 1 開始)')
+    plt.grid(True)
+    plt.legend()
+    print("正在顯示回測收益曲線圖...")
+    plt.show()
+
+    return xgb_clf, acc  # 返回模型及準確率
+
+def evaluate_with_confidence(classifier, X_test, y_test, threshold=0.60):
+    """
+    只評估「信心」高於 'threshold' 的交易。
+    - 計算信心分數 (max predict_proba)
+    - 篩選高信心預測及實際
+    - 計算準確率、交易頻率
+    - 繪製混淆矩陣
+    """
+    print(f"\n--- 高信心策略回測 (信心門檻 > {threshold:.0%}) ---")
     
-    print(f"\n--- 正在建立目標: 預測 {forecast_horizon} 小時之後的趨勢走向 ---")
-    df_model['target'] = (df_model['SMA'].shift(-forecast_horizon) > df_model['SMA']).astype(int)
-    df_model = df_model.dropna() 
-    
-    # 2. 標準化
-    scaler = MinMaxScaler(feature_range=(0, 1))
-    scaled_features = scaler.fit_transform(df_model[features_list])
-    target = df_model['target'].values
-    
-    # 3. 建立 3D 序列
-    X_seq, y_seq = create_sequences(scaled_features, target, lookback_window=lookback_window)
-    
-    # 4. 分割資料
-    test_size = 0.2 
-    split_index = int(len(X_seq) * (1 - test_size))
-    X_train, X_test = X_seq[:split_index], X_seq[split_index:]
-    y_train, y_test = y_seq[:split_index], y_seq[split_index:]
-
-    print(f"訓練集筆數: {len(X_train)}, 測試集筆數: {len(X_test)}")
-
-    # 5. 建立「深度堆疊」LSTM 模型
-    print("\n--- 步驟 4: 正在建立「深度堆疊」LSTM 模型... ---")
-    model = Sequential()
-    model.add(Bidirectional(LSTM(units=u1, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2]))))
-    model.add(Dropout(0.3)) 
-    model.add(Bidirectional(LSTM(units=u2)))
-    model.add(Dropout(0.3))
-    model.add(Dense(units=d1, activation='relu')) 
-    model.add(Dense(units=1, activation='sigmoid'))
-
-    model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
-    model.summary()
-
-    # 6. 訓練模型
-    print("\n--- 正在訓練「深度」LSTM 模型... ---")
-    model.fit(
-        X_train, y_train,
-        validation_data=(X_test, y_test),
-        **LSTM_BASE_PARAMS
-    )
-
-    # 7. 評估
-    loss, accuracy = model.evaluate(X_test, y_test, verbose=0)
-    
-    print("模型訓練完成。")
-    return model, accuracy, X_test, y_test
-
-def plot_confusion_matrix(classifier, X_test, y_test, show_plot=False):
-    """ (這是我們帶「開關」的繪圖函數) """
-    print("\n--- 步驟 6: 正在繪製混淆矩陣 ---")
     try:
-        y_pred = (classifier.predict(X_test, verbose=0) > 0.5).astype(int)
+        probabilities = classifier.predict_proba(X_test)
+        confidence_scores = np.max(probabilities, axis=1)
+        predictions = classifier.predict(X_test)
         
-        # (印出最終準確率)
-        accuracy = accuracy_score(y_test, y_pred)
-        print(f"\n模型在「測試集」上的準確率 (Accuracy): {accuracy:.2%}")
-        print("\n--- 詳細分類報告 (Classification Report) ---")
-        print(classification_report(y_test, y_pred, target_names=['跌 (0)', '漲 (1)']))
+        high_confidence_mask = confidence_scores > threshold
+        
+        if np.sum(high_confidence_mask) == 0:
+            print(f"警告：在 {len(y_test)} 筆資料中，沒有任何預測的信心 > {threshold:.0%}")
+            print("請嘗試降低門檻 (例如 0.55)。")
+            return
 
-        if show_plot:
-            print("正在顯示圖表...")
-            fig, ax = plt.subplots(figsize=(10, 7))
-            ax.set_title('混淆矩陣 (Confusion Matrix) - 1h LSTM')
-            ConfusionMatrixDisplay.from_predictions(
-                y_test, y_pred, ax=ax, cmap=plt.cm.Blues,
-                display_labels=['實際 跌 (0)', '實際 漲 (1)']
-            )
-            ax.xaxis.set_ticklabels(['預測 跌 (0)', '預測 漲 (1)'])
-            ax.yaxis.set_ticklabels(['實際 跌 (0)', '實際 漲 (1)'])
-            plt.show()
-        else:
-            print("繪圖開關已關閉 (未傳入 --plot)。")
-    except Exception as e:
-        print(f"繪製混淆矩陣時出錯: {e}")
-
-def evaluate_existing_model_trend(symbol, version, raw_df):
-    """ 評估「現行」模型在「相同」數據上的 Accuracy。"""
-    model_path = config.get_trend_model_path(symbol, version)
-    config_path = model_path.replace('.keras', '_feature_config.json')
-    
-    if not os.path.exists(model_path) or not os.path.exists(config_path):
-        print("--- 找不到現行模型，跳過競爭比較。---")
-        return 0.0 # 返回 0.0 準確率，確保新模型獲勝
-
-    try:
-        print(f"--- 載入現行模型 ({version}) 進行競爭比較... ---")
+        high_confidence_predictions = predictions[high_confidence_mask]
+        high_confidence_actuals = y_test[high_confidence_mask]
         
-        # 1. 載入現行模型和它的特徵參數
-        current_model = tf.keras.models.load_model(model_path)
-        with open(config_path, 'r') as f:
-            current_feature_config = json.load(f)
+        new_accuracy = accuracy_score(high_confidence_actuals, high_confidence_predictions)
         
-        print(f"現行模型的特徵參數: {current_feature_config}")
+        total_trades = len(y_test)
+        trades_taken = len(high_confidence_actuals)
         
-        # 2. 創建特徵 (使用現行模型自己的配置)
-        df_features_old, features_list_old = create_features_trend(raw_df.copy(), **current_feature_config)
+        print("\n--- 高信心策略回測結果 ---")
+        print(f"總 K 棒 (測試集): {total_trades}")
+        print(f"觸發交易 (信心 > {threshold:.0%}): {trades_taken} 次")
+        print(f"交易頻率: {trades_taken / total_trades:.2%}")
+        print("---------------------------------")
+        print(f"高信心交易的準確率 (Accuracy): {new_accuracy:.2%}")
+        print("---------------------------------")
         
-        # 3. 準備數據 (必須與 build_and_train_lstm 邏輯 100% 相同)
-        P = config.TREND_MODEL_PARAMS
-        df_model_old = df_features_old.copy()
+        # 繪製混淆矩陣
+        plt.rc('font', family='MingLiu')  # 支援中文字型
+        fig, ax = plt.subplots(figsize=(10, 7))
+        ax.set_title(f'混淆矩陣 (Confidence > {threshold:.0%})')
         
-        # 4. (*** 關鍵：使用儲存的配置來建立 Label ***)
-        # (我們假設 Label 總是基於 'SMA'，如果不是，這裡需要修改)
-        df_model_old['target'] = (df_model_old['SMA'].shift(-P['FORECAST_HORIZON']) > df_model_old['SMA']).astype(int)
-        df_model_old = df_model_old.dropna() 
+        ConfusionMatrixDisplay.from_predictions(
+            high_confidence_actuals,
+            high_confidence_predictions,
+            ax=ax,
+            cmap=plt.cm.Blues,
+            display_labels=['實際 跌 (0)', '實際 漲 (1)']
+        )
+        ax.xaxis.set_ticklabels(['預測 跌 (0)', '預測 漲 (1)'])
+        ax.yaxis.set_ticklabels(['實際 跌 (0)', '實際 漲 (1)'])
         
-        # 5. 標準化
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_features_old = scaler.fit_transform(df_model_old[features_list_old])
-        target_old = df_model_old['target'].values
-        
-        # 6. 建立 3D 序列
-        X_seq_old, y_seq_old = create_sequences(scaled_features_old, target_old, lookback_window=P['LOOKBACK_WINDOW'])
-        
-        # 7. 分割 (只取測試集)
-        test_size = 0.2 
-        split_index_old = int(len(X_seq_old) * (1 - test_size))
-        X_test_old = X_seq_old[split_index_old:]
-        y_test_old = y_seq_old[split_index_old:]
-        
-        # 8. 評估現行模型
-        loss, accuracy = current_model.evaluate(X_test_old, y_test_old, verbose=0)
-        
-        print(f"--- 現行模型在「當前數據」上的 Accuracy: {accuracy:.4f} ---")
-        return accuracy
+        print(f"正在顯示 信心 > {threshold:.0%} 的混淆矩陣...")
+        plt.show()
 
     except Exception as e:
-        print(f"🛑 載入或評估現行模型時出錯: {e}")
-        return 0.0 # 失敗返回 0.0，確保新模型獲勝
-    
+        print(f"執行高信心評估時出錯: {e}")
+
 if __name__ == "__main__":
-    
+
     # --- 3. 建立「參數解析器」 ---
-    parser = argparse.ArgumentParser(description='訓練 1h LSTM 趨勢模型')
-    
-    parser.add_argument(
-        '-s', '--symbol', 
-        type=str, 
-        required=True, # <-- *** 必須指定 symbol ***
-        help='要訓練的交易對 (例如: ETH/USDT 或 BTC/USDT)'
-    )
-    parser.add_argument(
-        '-l', '--limit', 
-        type=int, 
-        default=config.TREND_MODEL_TRAIN_LIMIT, 
-        help=f'K 線筆數 (預設: {config.TREND_MODEL_TRAIN_LIMIT})'
-    )
-    parser.add_argument(
-        '-v', '--version',
-        type=str,
-        default=config.TREND_MODEL_VERSION, # <-- 從 config 讀取預設版本
-        help=f'要訓練的模型版本 (預設: {config.TREND_MODEL_VERSION})'
-    )
-    parser.add_argument(
-        '-p', '--plot', 
-        action='store_true', 
-        help='(開關) 訓練完成後，顯示混淆矩陣圖表。'
-    )
-    
+    parser = argparse.ArgumentParser(description=f'訓練 {config.TREND_MODEL_TIMEFRAME} XGBoost 趨勢模型')
+
+    parser.add_argument('-s', '--symbol', type=str, required=True, help='要訓練的交易對 (例如: ETH/USDT 或 BTC/USDT)')
+    parser.add_argument('-tf', '--timeframe', type=str, required=True, help='要訓練的TimeFrame 例如:5m, 15m, 1h')
+    parser.add_argument('-sd', '--start', type=str, help='回測起始日期 (YYYY-MM-DD)')
+    parser.add_argument('-ed', '--end', type=str, help='回測結束日期 (YYYY-MM-DD)')
+    parser.add_argument('-ns', '--no_search_params', action='store_true', help='關閉尋找模型最佳參數')
+    parser.add_argument('-l', '--limit', type=int, help=f'K 線筆數限制')
+    parser.add_argument('-v', '--version', type=str, default=config.TREND_MODEL_VERSION, help=f'要訓練的模型版本 (預設: {config.TREND_MODEL_VERSION})')
+
     args = parser.parse_args()
-    
+
     # --- 4. 執行訓練 ---
-    print(f"--- 開始執行: {args.symbol} ({config.TREND_MODEL_TIMEFRAME}), 資料量={args.limit} ---")
-    
-    # (確保 models 資料夾存在)
+    print(f"--- 開始執行: {args.symbol} ({args.timeframe}), 資料量={args.limit} ---")
+
     os.makedirs(config.MODEL_DIR, exist_ok=True)
-    
-    # 1. 獲取資料
-    raw_df = fetch_data(symbol=args.symbol, timeframe=config.TREND_MODEL_TIMEFRAME, total_limit=args.limit)
+    raw_df = fetch_data(symbol=args.symbol, start_date=args.start, end_date=args.end, timeframe=args.timeframe, total_limit=args.limit)
 
-    # 設定參數格式, 生成參數組合
-    f_type = {
-        'lookback_window': 'discrete', 
-        'forecast_horizon': 'discrete',
-    }
-    iterator = SearchIterator(TREND_SEARCH_SPACE, search_type='random', n_iter=30, format_types=f_type)
-
-    print(f"--- 總共需要執行 {iterator.get_total_runs()} 次訓練 ---")
-    
-    best_accuracy = 0.0
-    best_model = None
-    best_feature_params = None 
-    best_X_test = None
-    best_y_test = None
-
-    FEATURE_KEYS = ['ema', 'sma', 'rsi', 'bbands']
-
-    for i, params in enumerate(iterator):
-        
-        # 1a. 分離特徵參數和模型參數
-        feature_params = {k: params[k] for k in FEATURE_KEYS if k in params}
-        # train_params = {k: params[k] for k in params.keys() if k not in FEATURE_KEYS}
-    
-        # 2. 特徵工程 (從 common_utils 引用)
-        df_features, features_list = create_features_trend(raw_df, **feature_params)
-        if df_features is None or features_list is None: 
-            print(f"Iter {i+1:02d}/{iterator.get_total_runs()}: 特徵計算失敗，跳過。")
-            continue
-        
-        # 3. 訓練與預測
-        best_classifier, accuracy, X_test, y_test = build_and_train_lstm(df_features, features_list)
-
-        print(f"Iter {i+1:02d}/{iterator.get_total_runs()}: Accuracy={accuracy:.4f} ({feature_params}))")
-
-        if accuracy > best_accuracy:
-            best_accuracy = accuracy
-            best_model = best_classifier
-            best_feature_params = feature_params
-            best_X_test = X_test
-            best_y_test = y_test
-
-    if not best_model:
-        print("🛑 訓練失敗：模型未被建立。")
+    # --- 計算特徵 ---
+    df_features, features_list = create_features_trend(raw_df.copy())
+    if df_features is None or features_list is None:
+        print(f"特徵計算失敗，結束訓練。")
         exit()
 
-    if best_accuracy < config.ABS_MIN_ACCURACY:
-        print(f"\n❌ 質量門 1 失敗！最佳 Accuracy ({best_accuracy:.4f}) 未達到絕對最低標準 ({config.ABS_MIN_ACCURACY * 100}%)。不儲存模型。")
+    # --- 訓練和評估 (改為分類模型) ---
+    model, acc = train_xgb_classifier(df_features, features_list)
+
+    if acc == 0.0 or model is None:
+        print(f"訓練失敗 (準確率=0.0)。")
+        exit()
+
+    print(f"訓練完成: 準確率={acc * 100:.2f}%")
+
+    # --- 最終模型儲存 (改用準確率閾值) ---
+    abs_min_acc = 0.55  # *** 修改: 準確率最低閾值 (可調整) ***
+
+    if acc < abs_min_acc:
+        print(f"\n❌ 訓練失敗！最佳準確率 ({acc * 100:.2f}%) 低於絕對極限 ({abs_min_acc * 100:.2f}%)。不儲存模型。")
         exit()
     else:
-        print(f"\n✅ 質量門 1 (絕對標準) 通過！")
+        print(f"\n✅ 質量門通過！最佳準確率 ({acc * 100:.2f}%) 優於絕對極限 ({abs_min_acc * 100:.2f}%)。")
 
-    historical_accuracy = evaluate_existing_model_trend(args.symbol, args.version, raw_df)
-    
-    if best_accuracy <= historical_accuracy:
-        print(f"\n❌ 質量門 2 失敗！新模型 Accuracy ({best_accuracy:.4f}) 並未優于現行模型 ({historical_accuracy:.4f})。不儲存模型。")
-        exit()
-    else:
-        print(f"\n✅ 質量門 2 (競爭標準) 通過！新模型 ({best_accuracy:.4f}) 成功擊敗 現行模型 ({historical_accuracy:.4f})。")
+    model_filename = config.get_trend_model_path(args.symbol, args.timeframe, args.version)
+    config_filename = model_filename.replace('.json', '_feature_config.json')
 
-    model_filename = config.get_trend_model_path(args.symbol, args.version)
-    config_filename = config.get_trend_model_path(args.symbol, args.version).replace('.keras', '_feature_config.json')
-    
-    # 5. 儲存模型
-    if best_model:
-        print(f"\n--- 正在儲存「趨勢模型」... ---")
-        best_model.save(model_filename)
-        print(f"模型儲存完畢！({model_filename})")
+    # 儲存 XGBoost 模型
+    print(f"\n--- 正在儲存「趨勢模型」... ---")
+    model.save_model(model_filename)
+    print(f"模型儲存完畢！({model_filename})")
 
-    if best_feature_params:
-        with open(config_filename, 'w') as f:
-            json.dump(best_feature_params, f, indent=4)
-        print(f"✅ 最佳特徵配置儲存完畢：{config_filename}")
-
-    # 4. 繪製混淆矩陣 (根據 --plot 參數)
-    if best_model:
-        plot_confusion_matrix(best_model, best_X_test, best_y_test, show_plot=args.plot)
+    # 儲存空的 config (因為特徵工程是固定的)
+    with open(config_filename, 'w') as f:
+        json.dump({}, f, indent=4)
+    print(f"✅ 特徵配置儲存完畢：{config_filename}")

@@ -44,8 +44,8 @@ def train_all_symbols():
         # 參數讀取
         trend_limit = config.TREND_MODEL_TRAIN_LIMIT
         trend_version = config.TREND_MODEL_VERSION
-        entry_limit = config.ENTRY_MODEL_TRAIN_LIMIT # <-- 修改
-        entry_version = config.ENTRY_MODEL_VERSION # <-- 修改
+        entry_limit = config.TREND_MODEL_TRAIN_LIMIT # <-- 修改
+        entry_version = config.TREND_MODEL_VERSION # <-- 修改
 
         # 執行 LSTM 趨勢訓練
         success = run_training_script(

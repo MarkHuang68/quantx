@@ -233,7 +233,7 @@ def train_and_predict(df_features):
     ]
     
     df_model = df_features.copy()
-    df_model['target'] = df_model['Close'].shift(-1) / df_model['Close_SMA'] - 1
+    df_model['target'] = df_model['Close'].shift(-1) / df_model['Close'].shift(12) - 1
     df_model = df_model.dropna()
 
     X = df_model[features]

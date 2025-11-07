@@ -113,7 +113,7 @@ def create_features_trend(df, ema=20, sma=60, rsi=14, bbands=10):
         print(f"計算趨勢特徵時發生錯誤: {e}")
         return None, None
 
-def create_features_entry(df):
+def create_features_trend(df):
     """
     (模型 A) 進場特徵 (報酬率預測模型)。
     """
@@ -126,16 +126,19 @@ def create_features_entry(df):
     high_prices = df['High'].values.astype(float)
     low_prices = df['Low'].values.astype(float)
     volume = df['Volume'].values.astype(float)
-    close_sma = talib.SMA(close_prices, 4)
-    df['Close_SMA'] = close_sma
 
     try:
-        ema = talib.EMA(close_prices, timeperiod=20)
+        ema_s = talib.EMA(close_prices, timeperiod=10)
+        ema_m = talib.EMA(close_prices, timeperiod=20)
+        ema_l = talib.EMA(close_prices, timeperiod=60)
         df['HOUR'] = df.index.hour
         df['D_OF_W'] = df.index.dayofweek
-        df['MONTH'] = df.index.month
-        df['EMA'] = ema
-        df['CLOSE_EMA'] = (close_prices - ema) / ema
+        df['EMA_S'] = ema_s
+        df['EMA_M'] = ema_m
+        df['EMA_L'] = ema_l
+        df['CLOSE_EMA_S'] = (close_prices - ema_s) / ema_s
+        df['EMA_S_EMA_M'] = (ema_s - ema_m) / ema_m
+        df['EMA_M_EMA_L'] = (ema_m - ema_l) / ema_l
         df['ATR'] = talib.ATR(high_prices, low_prices, close_prices, timeperiod=14)
         df['RSI'] = talib.RSI(close_prices, timeperiod=14)
         df['MOM'] = talib.MOM(close_prices, timeperiod=10)
@@ -189,11 +192,14 @@ def create_features_entry(df):
         # --- (特徵列表) ---
         features_list = [
             'HOUR',
-            # 'D_OF_W',
-            'MONTH',
+            'D_OF_W',
 
-            'EMA',
-            'CLOSE_EMA',
+            'EMA_S',
+            'EMA_M',
+            'EMA_L',
+            'CLOSE_EMA_S',
+            'EMA_S_EMA_M',
+            'EMA_M_EMA_L',
             'ATR',
             'RSI',
             'MOM',
@@ -212,7 +218,7 @@ def create_features_entry(df):
             'BB_Percent',
 
             'OBV',
-            'Volume',
+            # 'Volume',
             'VOLUME_CHANGE',
 
             'log_close',

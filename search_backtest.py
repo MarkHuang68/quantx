@@ -35,7 +35,7 @@ FORMAT_TYPES = {
 if __name__ == "__main__":
     # 解析命令列參數（--start 和 --end 傳給 backtest.py 以啟用快取）
     parser = argparse.ArgumentParser(description='執行回測參數尋優')
-    parser.add_argument('-s', '--symbol', type=str, default=None, help='Symbol，預設 None')
+    parser.add_argument('-s', '--symbol', type=str, required=True, help='Symbol，預設 None')
     parser.add_argument('--start', type=str, default=None, help='回測起始日期 (YYYY-MM-DD)，預設 None')
     parser.add_argument('--end', type=str, default=None, help='回測結束日期 (YYYY-MM-DD)，預設 None')
     args = parser.parse_args()

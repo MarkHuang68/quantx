@@ -8,7 +8,7 @@ import os
 
 # --- 1. 引用「設定檔」和「共用工具箱」 ---
 import config
-from common_utils import create_features_trend, create_features_entry, create_sequences
+from common_utils import create_features_trend, create_features_trend, create_sequences
 
 # --- 2. 匯入模型 ---
 import tensorflow as tf
@@ -43,13 +43,13 @@ for symbol in config.SYMBOLS_TO_TRADE:
 
     # 載入進場模型 (XGBoost)
     try:
-        path = config.get_entry_model_path(symbol, config.ENTRY_MODEL_VERSION)
+        path = config.get_trend_model_path(symbol, config.TREND_MODEL_VERSION)
         xgb_model = xgb.Booster()
         xgb_model.load_model(path)
         MODELS_A_5M_XGB[symbol] = xgb_model
-        print(f"✅ {symbol} 進場模型 (Ver: {config.ENTRY_MODEL_VERSION}) 載入成功！")
+        print(f"✅ {symbol} 進場模型 (Ver: {config.TREND_MODEL_VERSION}) 載入成功！")
     except Exception as e:
-        print(f"🛑 錯誤：無法載入 {symbol} 的「進場模型」。請先執行: \n python train_entry_model.py --symbol {symbol} --version {config.ENTRY_MODEL_VERSION}")
+        print(f"🛑 錯誤：無法載入 {symbol} 的「進場模型」。請先執行: \n python train_entry_model.py --symbol {symbol} --version {config.TREND_MODEL_VERSION}")
         exit()
 
 print("--- 所有模型載入完畢 ---")
@@ -100,10 +100,10 @@ def get_entry_signal(symbol):
     """
     print(f"--- (檢查 {symbol} 5m 觸發器) ---")
     try:
-        ohlcv_5m = exchange.fetch_ohlcv(symbol, config.ENTRY_MODEL_TIMEFRAME, limit=100)
+        ohlcv_5m = exchange.fetch_ohlcv(symbol, config.TREND_MODEL_TIMEFRAME, limit=100)
         df = pd.DataFrame(ohlcv_5m, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         
-        df_with_features, features_list = create_features_entry(df)
+        df_with_features, features_list = create_features_trend(df)
         
         last_features = df_with_features[features_list].iloc[-1:]
         X_live = xgb.DMatrix(last_features)

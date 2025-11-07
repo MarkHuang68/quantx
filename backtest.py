@@ -24,7 +24,7 @@ from keras.models import load_model
 
 # --- 1. 引用「設定檔」和「共用工具箱」 ---
 import config
-from common_utils import fetch_data, create_features_trend, create_features_entry, create_sequences
+from common_utils import fetch_data, create_features_trend, create_features_trend, create_sequences
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 np.random.seed(42)
@@ -50,7 +50,7 @@ def load_models_and_configs(symbol, trend_version, entry_version):
     print("✅ 趨勢模型載入成功。")
 
     # --- 載入進場模型 (XGBoost) ---
-    entry_model_path = config.get_entry_model_path(symbol, entry_version)
+    entry_model_path = config.get_trend_model_path(symbol, 1, entry_version)
     if not os.path.exists(entry_model_path):
         print(f"🛑 錯誤：找不到進場模型 {entry_model_path}。")
         return None
@@ -75,7 +75,7 @@ def prepare_backtest_data(symbol, models_data):
     
     # --- 1. 載入數據 ---
     df_1h = fetch_data(symbol, config.TREND_MODEL_TIMEFRAME, args.start, args.end, config.TREND_MODEL_BACKTEST_LIMIT)
-    df_5m = fetch_data(symbol, config.ENTRY_MODEL_TIMEFRAME, args.start, args.end, config.TREND_MODEL_BACKTEST_LIMIT * 12)
+    df_5m = fetch_data(symbol, config.TREND_MODEL_TIMEFRAME, args.start, args.end, config.TREND_MODEL_BACKTEST_LIMIT * 12)
     
     if df_1h is None or df_5m is None:
         print("🛑 數據獲取失敗。")
@@ -100,16 +100,16 @@ def prepare_backtest_data(symbol, models_data):
     df_1h_features['trend_signal'] = trend_predictions
     
     # --- 3. 預計算「進場模型 (XGB)」訊號 (在 5m 數據上) ---
-    print(f"正在計算 {config.ENTRY_MODEL_TIMEFRAME} 進場模型訊號...")
+    print(f"正在計算 {config.TREND_MODEL_TIMEFRAME} 進場模型訊號...")
     entry_model = models_data['entry_model']
     
-    df_5m_features, features_list_5m = create_features_entry(df_5m.copy())
+    df_5m_features, features_list_5m = create_features_trend(df_5m.copy())
     
     X_5m = xgb.DMatrix(df_5m_features[features_list_5m])
     df_5m_features['entry_prediction'] = entry_model.predict(X_5m)  # 預測報酬率
     
     # --- 4. 合併 MTF 數據 ---
-    print(f"正在合併 {config.TREND_MODEL_TIMEFRAME} 和 {config.ENTRY_MODEL_TIMEFRAME} 數據...")
+    print(f"正在合併 {config.TREND_MODEL_TIMEFRAME} 和 {config.TREND_MODEL_TIMEFRAME} 數據...")
     
     df_1h_signal_resampled = df_1h_features[['trend_signal']].reindex(df_5m_features.index, method='ffill')
     df_backtest = df_5m_features.join(df_1h_signal_resampled)
@@ -177,8 +177,8 @@ def run_strategy_backtest(df_backtest, symbol, stop_loss_pct, take_profit_pct, e
             if predicted_return is None or trend_signal is None:
                 continue
             
-            if (trend_signal == 1 and predicted_return > entry_threshold) or \
-               (trend_signal == 0 and predicted_return < -entry_threshold):
+            if (predicted_return > entry_threshold) or \
+               (predicted_return < -entry_threshold):
                 
                 # Kelly 計算倉位比例 (穩定版：p 保守估計；限制 5%-30%)
                 p = 0.55 + abs(predicted_return) * 0.5  # 穩定勝率估計
@@ -268,7 +268,7 @@ def run_strategy_backtest(df_backtest, symbol, stop_loss_pct, take_profit_pct, e
         plt.plot(equity_curve, label='策略', color='red')  # 策略曲線 (紅色)
         plt.plot(bh_curve, label='Buy & Hold', color='gray', linestyle='--')  # Buy & Hold (灰色虛線)
         plt.title(f'策略權益曲線 (Equity Curve) - {symbol}')  # 標題
-        plt.xlabel(f'{config.ENTRY_MODEL_TIMEFRAME} K 棒 (時間步)')  # X 軸標籤
+        plt.xlabel(f'{config.TREND_MODEL_TIMEFRAME} K 棒 (時間步)')  # X 軸標籤
         plt.ylabel('淨值 (USD)')  # Y 軸標籤
         plt.grid(True)  # 顯示格線
         plt.legend()    # 顯示圖例
@@ -281,16 +281,16 @@ if __name__ == "__main__":
     parser.add_argument('-s', '--symbol', type=str, required=True, help='要回測的交易對 (e.g., ETH/USDT)')
     parser.add_argument('-sd', '--start', type=str, help='回測起始日期 (YYYY-MM-DD)')
     parser.add_argument('-ed', '--end', type=str, help='回測結束日期 (YYYY-MM-DD)')
-    parser.add_argument('-sl', '--stop_loss', type=float, default=0.025, help='止損百分比 (預設 0.01)')
+    parser.add_argument('-sl', '--stop_loss', type=float, default=0.015, help='止損百分比 (預設 0.01)')
     parser.add_argument('-tp', '--take_profit', type=float, default=0.05, help='止盈百分比 (預設 0.02)')
-    parser.add_argument('-et', '--entry_threshold', type=float, default=0.0001, help='進場門檻 (預設 0.0001)')
+    parser.add_argument('-et', '--entry_threshold', type=float, default=0.0005, help='進場門檻 (預設 0.0001)')
     parser.add_argument('--no_plot', action='store_true', help='不顯示權益曲線圖 (用於尋參)')
     args = parser.parse_args()
     
     models_data = load_models_and_configs(
         args.symbol, 
         config.TREND_MODEL_VERSION, 
-        config.ENTRY_MODEL_VERSION
+        config.TREND_MODEL_VERSION
     )
     
     if models_data:

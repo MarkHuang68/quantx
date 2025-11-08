@@ -1,0 +1,11 @@
+# requirements.txt
+pandas
+tensorflow
+xgboost
+scikit-learn
+ccxt
+matplotlib
+ta
+stable-baselines3
+gymnasium
+python-dotenv

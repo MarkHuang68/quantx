@@ -78,14 +78,9 @@ def prepare_data_for_ppo(symbol, ohlcv_data):
 
     try:
         # 載入預先訓練好的 XGBoost 模型
-        trend_model_path = get_trend_model_path(symbol, TREND_MODEL_VERSION)
-        entry_model_path = get_trend_model_path(symbol, TREND_MODEL_VERSION) # 假設路徑邏輯相同
-
-        trend_model = xgb.Booster()
-        trend_model.load_model(trend_model_path)
-
-        entry_model = xgb.Booster()
-        entry_model.load_model(entry_model_path)
+        model_path = get_trend_model_path(symbol, TREND_MODEL_VERSION)
+        model = xgb.Booster()
+        model.load_model(model_path)
     except Exception as e:
         print(f"🛑 錯誤：無法載入 {symbol} 的 XGBoost 模型。請先訓練模型。 {e}")
         return None
@@ -95,11 +90,11 @@ def prepare_data_for_ppo(symbol, ohlcv_data):
 
     # 計算 XGBoost 訊號
     dmatrix = xgb.DMatrix(df_features[features_list])
-    df_features['trend_signal'] = (trend_model.predict(dmatrix) > 0.5).astype(int) * 2 - 1 # 轉換為 -1, 1
-    df_features['entry_signal'] = (entry_model.predict(dmatrix) > 0.5).astype(int) * 2 - 1 # 轉換為 -1, 1
+    # 假設模型輸出為: 0 (做空), 1 (空手), 2 (做多)
+    df_features['xgb_signal'] = model.predict(dmatrix).astype(int)
 
     # 選取 PPO 的輸入特徵 (包括 XGBoost 訊號)
-    ppo_features = features_list + ['trend_signal', 'entry_signal', 'Close']
+    ppo_features = features_list + ['xgb_signal', 'Close']
     df_ppo = df_features[ppo_features].dropna()
 
     # 標準化

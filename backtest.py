@@ -11,7 +11,7 @@ from core.context import Context
 from core.exchange import PaperExchange
 from core.portfolio import Portfolio
 from core.data_loader import load_csv_data
-from strategies.dual_model_strategy import DualModelStrategy
+from strategies.xgboost_trend_strategy import XGBoostTrendStrategy
 from backtest.engine import BacktestEngine
 
 def plot_results(results, symbol):
@@ -38,7 +38,7 @@ def plot_results(results, symbol):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='向量化回測腳本')
     parser.add_argument('--data-dir', type=str, required=True, help='包含 CSV 數據檔案的目錄')
-    parser.add_argument('--strategy', type=str, default='dual_model', help='要執行的策略')
+    parser.add_argument('--strategy', type=str, default='xgboost_trend', help='要執行的策略')
     parser.add_argument('--use-ppo', action='store_true', help='使用 PPO 進行倉位管理')
     parser.add_argument('--ppo-model', type=str, help='PPO 模型檔案的路徑')
     
@@ -65,8 +65,8 @@ if __name__ == '__main__':
         exit()
 
     # 4. 選擇並初始化策略
-    if args.strategy == 'dual_model':
-        strategy = DualModelStrategy(
+    if args.strategy == 'xgboost_trend':
+        strategy = XGBoostTrendStrategy(
             context,
             symbols=list(data.keys()),
             use_ppo=args.use_ppo,

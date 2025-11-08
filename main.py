@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from core.context import Context
 from core.exchange import BinanceExchange, CoinbaseExchange, PaperExchange
 from core.data_loader import load_csv_data
-from strategies.dual_model_strategy import DualModelStrategy
+from strategies.xgboost_trend_strategy import XGBoostTrendStrategy
 from core.portfolio import Portfolio
 
 def run_live(context, strategy):
@@ -99,7 +99,7 @@ if __name__ == '__main__':
     from config.settings import SYMBOLS_TO_TRADE
 
     # 5. 初始化策略
-    strategy = DualModelStrategy(
+    strategy = XGBoostTrendStrategy(
         context,
         symbols=SYMBOLS_TO_TRADE,
         use_ppo=args.use_ppo,

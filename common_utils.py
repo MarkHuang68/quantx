@@ -78,41 +78,6 @@ def fetch_data(symbol, timeframe, start_date=None, end_date=None, total_limit=No
     print("DataFrame 處理完成。")
     return df
 
-def create_features_trend(df, ema=20, sma=60, rsi=14, bbands=10):
-    """
-    (模型 B) 趨勢特徵。
-    *** 您的「黃金配方」就「寫死」在這裡 ***
-    """
-    if df is None:
-        return None, None
-    
-    print("\n--- 正在計算「趨勢特徵」---")
-
-    try:
-        close_prices = df['Close'].values.astype(float)
-        
-        df['EMA'] = talib.EMA(close_prices, timeperiod=20)
-        df['SMA'] = talib.SMA(close_prices, timeperiod=60)
-        df['Maybe'] = (df['EMA'] > df['SMA']).astype(int)
-        df['RSI'] = talib.RSI(close_prices, timeperiod=14)
-        upperband, middleband, lowerband = talib.BBANDS(close_prices, timeperiod=10, nbdevup=2, nbdevdn=2, matype=0)
-        df['BB_Width'] = (upperband - lowerband) / (middleband + 1e-10)
-        
-        df_features = df.dropna() 
-
-        features_list = [
-            'EMA',
-            'SMA',
-            'Maybe',
-            'RSI',
-            'BB_Width'
-        ]
-
-        return df_features, features_list
-    except Exception as e:
-        print(f"計算趨勢特徵時發生錯誤: {e}")
-        return None, None
-
 def create_features_trend(df):
     """
     (模型 A) 進場特徵 (報酬率預測模型)。
@@ -122,23 +87,30 @@ def create_features_trend(df):
         
     print("\n--- 正在計算「進場特徵」---")
 
-    close_prices = df['Close'].values.astype(float)
-    high_prices = df['High'].values.astype(float)
-    low_prices = df['Low'].values.astype(float)
-    volume = df['Volume'].values.astype(float)
+    close_prices = df['Close']
+    high_prices = df['High']
+    low_prices = df['Low']
+    volume = df['Volume']
 
     try:
-        ema_s = talib.EMA(close_prices, timeperiod=10)
+        ema_s = talib.EMA(close_prices, timeperiod=8)
         ema_m = talib.EMA(close_prices, timeperiod=20)
         ema_l = talib.EMA(close_prices, timeperiod=60)
+
         df['HOUR'] = df.index.hour
         df['D_OF_W'] = df.index.dayofweek
         df['EMA_S'] = ema_s
         df['EMA_M'] = ema_m
         df['EMA_L'] = ema_l
         df['CLOSE_EMA_S'] = (close_prices - ema_s) / ema_s
+        df['CLOSE_EMA_M'] = (close_prices - ema_m) / ema_m
+        df['CLOSE_EMA_L'] = (close_prices - ema_l) / ema_l
         df['EMA_S_EMA_M'] = (ema_s - ema_m) / ema_m
         df['EMA_M_EMA_L'] = (ema_m - ema_l) / ema_l
+        df['TREND'] = (ema_s > ema_m) & (ema_m > ema_l)
+        df['TREND1'] = (ema_s < ema_m) & (ema_m > ema_l)
+        df['TREND2'] = (ema_s < ema_m) & (ema_m < ema_l)
+        df['TREND3'] = (ema_s > ema_m) & (ema_m < ema_l)
         df['ATR'] = talib.ATR(high_prices, low_prices, close_prices, timeperiod=14)
         df['RSI'] = talib.RSI(close_prices, timeperiod=14)
         df['MOM'] = talib.MOM(close_prices, timeperiod=10)
@@ -191,25 +163,31 @@ def create_features_trend(df):
 
         # --- (特徵列表) ---
         features_list = [
-            'HOUR',
-            'D_OF_W',
+            # 'HOUR',
+            # 'D_OF_W',
 
-            'EMA_S',
-            'EMA_M',
-            'EMA_L',
-            'CLOSE_EMA_S',
-            'EMA_S_EMA_M',
-            'EMA_M_EMA_L',
-            'ATR',
+            # 'EMA_S',
+            # 'EMA_M',
+            # 'EMA_L',
+            # 'CLOSE_EMA_S',
+            # 'CLOSE_EMA_M',
+            'CLOSE_EMA_L',
+            # 'EMA_S_EMA_M',
+            # 'EMA_M_EMA_L',
+            # 'TREND',
+            # 'TREND1',
+            # 'TREND2',
+            # 'TREND3',
+            # 'ATR',
             'RSI',
             'MOM',
-            'ADX',
-            'ADX_hist',
-            'ADX_hist_ema',
-            'WILLR',
-            'KDJ_K',
-            'KDJ_D',
-            'KDJ_J',
+            # 'ADX',
+            # 'ADX_hist',
+            # 'ADX_hist_ema',
+            # 'WILLR',
+            # 'KDJ_K',
+            # 'KDJ_D',
+            # 'KDJ_J',
 
             'MACD', 'MACD_signal',
             'MACD_hist',
@@ -217,17 +195,17 @@ def create_features_trend(df):
             'BB_Width',
             'BB_Percent',
 
-            'OBV',
-            # 'Volume',
-            'VOLUME_CHANGE',
+            # 'OBV',
+            # # 'Volume',
+            # 'VOLUME_CHANGE',
 
-            'log_close',
-            'lag_return_1',
-            'lag_return_2',
-            'lag_return_3',
-            'lag_return_4',
-            'lag_return_5',
-            'volatility'
+            # 'log_close',
+            # 'lag_return_1',
+            # 'lag_return_2',
+            # 'lag_return_3',
+            # 'lag_return_4',
+            # 'lag_return_5',
+            # 'volatility'
         ]
 
         df_features = df.dropna()

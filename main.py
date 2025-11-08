@@ -67,6 +67,8 @@ if __name__ == '__main__':
     parser.add_argument('--mode', type=str, choices=['live', 'paper'], required=True, help='執行模式 (live: 實盤, paper: 模擬)')
     parser.add_argument('--exchange', type=str, choices=['binance', 'coinbase'], default='binance', help='交易所 (僅在 live 模式下有效)')
     parser.add_argument('--data-dir', type=str, help='包含 CSV 數據檔案的目錄 (僅在 paper 模式下需要)')
+    parser.add_argument('--use-ppo', action='store_true', help='使用 PPO 進行倉位管理')
+    parser.add_argument('--ppo-model', type=str, help='PPO 模型檔案的路徑')
 
     args = parser.parse_args()
 
@@ -97,8 +99,12 @@ if __name__ == '__main__':
     from config.settings import SYMBOLS_TO_TRADE
 
     # 5. 初始化策略
-    # 在這裡，您可以根據需要選擇不同的策略
-    strategy = DualModelStrategy(context, symbols=SYMBOLS_TO_TRADE)
+    strategy = DualModelStrategy(
+        context,
+        symbols=SYMBOLS_TO_TRADE,
+        use_ppo=args.use_ppo,
+        ppo_model_path=args.ppo_model
+    )
 
     # 6. 執行
     if args.mode == 'live':

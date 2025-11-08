@@ -39,6 +39,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='向量化回測腳本')
     parser.add_argument('--data-dir', type=str, required=True, help='包含 CSV 數據檔案的目錄')
     parser.add_argument('--strategy', type=str, default='dual_model', help='要執行的策略')
+    parser.add_argument('--use-ppo', action='store_true', help='使用 PPO 進行倉位管理')
+    parser.add_argument('--ppo-model', type=str, help='PPO 模型檔案的路徑')
     
     args = parser.parse_args()
 
@@ -64,7 +66,12 @@ if __name__ == '__main__':
 
     # 4. 選擇並初始化策略
     if args.strategy == 'dual_model':
-        strategy = DualModelStrategy(context, symbols=list(data.keys()))
+        strategy = DualModelStrategy(
+            context,
+            symbols=list(data.keys()),
+            use_ppo=args.use_ppo,
+            ppo_model_path=args.ppo_model
+        )
     else:
         raise ValueError(f"未知的策略: {args.strategy}")
 

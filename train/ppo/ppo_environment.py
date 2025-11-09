@@ -29,9 +29,10 @@ class TradingEnvironment(gym.Env):
         self.action_space = spaces.Discrete(len(self.action_map))
 
         # 觀察狀態空間: [市場特徵, XGBoost訊號, 倉位, 淨值比例]
-        low = np.array([-np.inf] * self.n_features + [-1, 0])
-        high = np.array([np.inf] * self.n_features + [1, np.inf])
-        self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
+        # XGBoost 訊號標準化為: 1 (做多), -1 (做空), 0 (持有)
+        obs_low = [-np.inf] * (self.n_features - 1) + [-1, -1, 0] # features_list 不包含 xgb_signal，但 df_data 包含
+        obs_high = [np.inf] * (self.n_features - 1) + [1, 1, np.inf]
+        self.observation_space = spaces.Box(low=np.array(obs_low), high=np.array(obs_high), dtype=np.float32)
 
         # 內部狀態
         self.reset()
@@ -66,18 +67,18 @@ class TradingEnvironment(gym.Env):
         return self._get_observation(), reward, done, False, {'net_worth': self.net_worth}
 
     def _get_observation(self):
+        # 確保 xgb_signal 被包含在 observation 中
         features = self.df_data[self.features].iloc[self.current_step].values
         account_state = np.array([self.position, self.net_worth / self.initial_balance])
         return np.concatenate([features, account_state]).astype(np.float32)
 
 def prepare_data_for_ppo(symbol, ohlcv_data):
     """
-    為 PPO 訓練準備數據，包括計算 XGBoost 訊號。
+    為 PPO 訓練準備數據，包括計算並標準化 XGBoost 訊號。
     """
     print(f"--- 正在為 {symbol} 準備 PPO 訓練數據 ---")
 
     try:
-        # 載入預先訓練好的 XGBoost 模型
         model_path = settings.get_trend_model_path(symbol, '1m', settings.TREND_MODEL_VERSION)
         model = xgb.XGBClassifier()
         model.load_model(model_path)
@@ -85,14 +86,16 @@ def prepare_data_for_ppo(symbol, ohlcv_data):
         print(f"🛑 錯誤：無法載入 {symbol} 的 XGBoost 模型。請先訓練模型。 {e}")
         return None
 
-    # 計算特徵
     df_features, features_list = create_features_trend(ohlcv_data.copy())
 
-    # 計算 XGBoost 訊號
-    # 假設模型輸出為: 0 (做空), 1 (空手), 2 (做多)
-    df_features['xgb_signal'] = model.predict(df_features[features_list]).astype(int)
+    # 計算原始 XGBoost 訊號 (0=持有, 1=做多, 2=做空)
+    raw_signal = model.predict(df_features[features_list]).astype(int)
 
-    # 選取 PPO 的輸入特徵 (包括 XGBoost 訊號)
+    # 標準化訊號: 1 (做多) -> 1, 2 (做空) -> -1, 0 (持有) -> 0
+    signal_map = {1: 1, 2: -1, 0: 0}
+    df_features['xgb_signal'] = pd.Series(raw_signal, index=df_features.index).map(signal_map)
+
+    # 選取 PPO 的輸入特徵 (現在包含標準化後的訊號)
     ppo_features = features_list + ['xgb_signal', 'Close']
     df_ppo = df_features[ppo_features].dropna()
 

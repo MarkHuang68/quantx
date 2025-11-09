@@ -153,23 +153,26 @@ class XGBoostTrendStrategy(BaseStrategy):
         trade_size_usd = self.context.portfolio.get_total_value() * 0.1
         amount_to_trade = trade_size_usd / current_price
 
-        # --- 新的交易邏輯 (支援做空) ---
-        if prediction == 1:  # 訊號: 做多
-            if current_position <= 0: # 如果有空倉，先平倉再開多倉
-                if current_position < 0:
-                    self.context.exchange.create_order(symbol, 'market', 'buy', abs(current_position))
+        # --- 全新的、更簡潔的交易邏輯 ---
+        if prediction == 1:  # 目標: 做多
+            if current_position < 0: # 如果是空倉
+                amount_to_buy = abs(current_position) + amount_to_trade
+                self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_buy)
+            elif current_position == 0: # 如果是空手
                 self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade)
+            # 如果已是多倉，不動作
 
-        elif prediction == 2: # 訊號: 做空
-            if current_position >= 0: # 如果有多倉，先平倉再開空倉
-                if current_position > 0:
-                    self.context.exchange.create_order(symbol, 'market', 'sell', abs(current_position))
+        elif prediction == 2: # 目標: 做空
+            if current_position > 0: # 如果是多倉
+                amount_to_sell = current_position + amount_to_trade
+                self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_sell)
+            elif current_position == 0: # 如果是空手
                 self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade)
+            # 如果已是空倉，不動作
 
-        elif prediction == 0:  # 訊號: 空手
-            if current_position != 0:
-                # 平掉所有倉位
-                if current_position > 0:
-                    self.context.exchange.create_order(symbol, 'market', 'sell', abs(current_position))
-                else: # current_position < 0
-                    self.context.exchange.create_order(symbol, 'market', 'buy', abs(current_position))
+        elif prediction == 0:  # 目標: 平倉
+            if current_position > 0: # 如果是多倉
+                self.context.exchange.create_order(symbol, 'market', 'sell', abs(current_position))
+            elif current_position < 0: # 如果是空倉
+                self.context.exchange.create_order(symbol, 'market', 'buy', abs(current_position))
+            # 如果是空手，不動作

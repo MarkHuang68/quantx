@@ -10,25 +10,40 @@ import settings
 from utils.common import create_features_trend
 
 class PPOManager:
-    def __init__(self, model_path, symbol):
+    def __init__(self, model_path, symbol, timeframe, version):
+        self.initialized = False
+        # 直接硬編碼 action_map
+        self.action_map = np.array([-1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0], dtype=np.float32)
+        print(f"✅ Action Map 已設定: {self.action_map}")
+
         self.model = self._load_model(model_path)
-        self.xgb_model = self._load_xgb_model(symbol)
+        self.xgb_model = self._load_xgb_model(symbol, timeframe, version)
         self.scaler = StandardScaler()
 
+        if self.model and self.xgb_model:
+            self.initialized = True
+        else:
+            print(f"🛑 PPO 管理器初始化失敗！狀態：model={self.model is not None}, xgb_model={self.xgb_model is not None}")
+
+        print(f"--- PPO Manager 最終初始化狀態 for {symbol}: self.initialized = {self.initialized} ---")
+
     def _load_model(self, model_path):
+        if not model_path:
+            print("🛑 錯誤：未提供 PPO 模型路徑。")
+            return None
         print(f"--- 正在載入 PPO 模型: {model_path} ---")
         try:
             model = PPO.load(model_path)
-            print("✅ PPO 模型載入成功！")
+            print(f"✅ PPO 模型載入成功！")
             return model
         except Exception as e:
             print(f"🛑 錯誤：無法載入 PPO 模型。{e}")
             return None
 
-    def _load_xgb_model(self, symbol):
-        print(f"--- 正在為 PPO 管理器載入 XGBoost 模型: {symbol} ---")
+    def _load_xgb_model(self, symbol, timeframe, version):
+        print(f"--- 正在為 PPO 管理器載入 XGBoost 模型: {symbol} ({timeframe}, v{version}) ---")
         try:
-            model_path = settings.get_trend_model_path(symbol, settings.TREND_MODEL_VERSION)
+            model_path = settings.get_trend_model_path(symbol, timeframe, version)
             model = xgb.XGBClassifier()
             model.load_model(model_path)
             print("✅ XGBoost 模型載入成功！")

@@ -162,23 +162,19 @@ class PaperExchange(Exchange):
 
         if side == 'buy':
             cost = amount * price
-            if self._balance[quote_currency]['free'] >= cost:
-                self._balance[quote_currency]['free'] -= cost
-                # 同步更新 total 餘額
-                self._balance[quote_currency]['total'] -= cost
-                self._positions.setdefault(base_currency, 0)
-                self._positions[base_currency] += amount
-            else:
-                raise ValueError("資金不足")
+            if self._balance[quote_currency]['free'] < cost:
+                raise ValueError(f"資金不足，需要 {cost:.2f} {quote_currency}，但只有 {self._balance[quote_currency]['free']:.2f}")
+
+            self._balance[quote_currency]['free'] -= cost
+            self._positions.setdefault(base_currency, 0)
+            self._positions[base_currency] += amount
+
         elif side == 'sell':
-            if self._positions.get(base_currency, 0) >= amount:
-                self._positions[base_currency] -= amount
-                revenue = amount * price
-                self._balance[quote_currency]['free'] += revenue
-                # 同步更新 total 餘額
-                self._balance[quote_currency]['total'] += revenue
-            else:
-                raise ValueError("持倉不足")
+            # 允許做空，移除持倉檢查
+            self._positions.setdefault(base_currency, 0)
+            self._positions[base_currency] -= amount
+            revenue = amount * price
+            self._balance[quote_currency]['free'] += revenue
 
         return {
             'info': {'symbol': symbol, 'side': side, 'type': type, 'executedQty': amount, 'avgPrice': price},

@@ -21,7 +21,17 @@ class XGBoostTrendStrategy(BaseStrategy):
         if self.use_ppo:
             if not ppo_model_path:
                 raise ValueError("使用 PPO 時，必須提供 PPO 模型路徑")
-            self.ppo_managers = {symbol: PPOManager(ppo_model_path, symbol) for symbol in self.symbols}
+            self.ppo_managers = {
+                symbol: PPOManager(
+                    model_path=ppo_model_path,
+                    symbol=symbol,
+                    timeframe=self.timeframe,
+                    version=TREND_MODEL_VERSION
+                ) for symbol in self.symbols
+            }
+            # DEBUG: 打印初始化時的 ppo_managers 狀態
+            for symbol, manager in self.ppo_managers.items():
+                print(f"[DEBUG __init__] Symbol: {symbol}, Manager ID: {id(manager)}, Initialized: {manager.initialized}")
 
     def _load_models(self):
         print("--- 正在載入 XGBoost 趨勢模型... ---")
@@ -72,6 +82,17 @@ class XGBoostTrendStrategy(BaseStrategy):
         return int(prediction)
 
     def _process_symbol_with_ppo(self, symbol, dt, features_series):
+        ppo_manager = self.ppo_managers[symbol]
+
+        # DEBUG: 打印每一次 bar 的 ppo_manager 狀態
+        if dt.minute == 0 and dt.second == 0: # 只在整點打印，避免洗版
+            print(f"[DEBUG on_bar] Dt: {dt}, Symbol: {symbol}, Manager ID: {id(ppo_manager)}, Initialized: {ppo_manager.initialized}")
+
+        # 增加穩健性檢查
+        if not ppo_manager.initialized:
+            print(f"警告：{symbol} 的 PPO 管理器未成功初始化，跳過 PPO 決策。")
+            return
+
         # PPO 仍然需要一個小範圍的歷史數據來計算其內部狀態（例如，觀察空間）
         ohlcv = self.context.exchange.get_ohlcv(symbol, '5m', limit=200)
         if ohlcv.empty:
@@ -84,10 +105,10 @@ class XGBoostTrendStrategy(BaseStrategy):
 
         # 將 XGBoost 訊號傳遞給 PPO
         xgb_prediction = self._get_xgb_prediction(symbol, features_series)
-        action = self.ppo_managers[symbol].get_action(ohlcv, portfolio_state, xgb_prediction)
+        action = ppo_manager.get_action(ohlcv, portfolio_state, xgb_prediction)
 
         # 後續邏輯保持不變...
-        target_position = self.ppo_managers[symbol].model.env.get_attr('action_map')[0][action]
+        target_position = ppo_manager.action_map[action]
         current_position_value = self.context.portfolio.get_positions().get(symbol.split('/')[0], 0)
 
         # 根據 PPO 的目標倉位調整下單
@@ -132,19 +153,23 @@ class XGBoostTrendStrategy(BaseStrategy):
         trade_size_usd = self.context.portfolio.get_total_value() * 0.1
         amount_to_trade = trade_size_usd / current_price
 
-        # --- 新的交易邏輯 ---
+        # --- 新的交易邏輯 (支援做空) ---
         if prediction == 1:  # 訊號: 做多
-            if current_position == 0:
-                # print(f"✅ ({dt}) {symbol} 訊號 [做多], 開倉！")
+            if current_position <= 0: # 如果有空倉，先平倉再開多倉
+                if current_position < 0:
+                    self.context.exchange.create_order(symbol, 'market', 'buy', abs(current_position))
                 self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade)
-            else:
-                # print(f"⬜ ({dt}) {symbol} 訊號 [做多], 但已持倉, 不動作。")
-                pass
 
-        elif prediction == 2 or prediction == 0:  # 訊號: 做空 或 空手
-            if current_position > 0:
-                # print(f"🛑 ({dt}) {symbol} 訊號 [平倉], 平掉多倉！")
-                self.context.exchange.create_order(symbol, 'market', 'sell', current_position)
-            else:
-                # print(f"⬜ ({dt}) {symbol} 訊號 [平倉/空手], 無多倉可平, 不動作。")
-                pass
+        elif prediction == 2: # 訊號: 做空
+            if current_position >= 0: # 如果有多倉，先平倉再開空倉
+                if current_position > 0:
+                    self.context.exchange.create_order(symbol, 'market', 'sell', abs(current_position))
+                self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade)
+
+        elif prediction == 0:  # 訊號: 空手
+            if current_position != 0:
+                # 平掉所有倉位
+                if current_position > 0:
+                    self.context.exchange.create_order(symbol, 'market', 'sell', abs(current_position))
+                else: # current_position < 0
+                    self.context.exchange.create_order(symbol, 'market', 'buy', abs(current_position))

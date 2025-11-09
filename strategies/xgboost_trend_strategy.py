@@ -27,7 +27,7 @@ class XGBoostTrendStrategy(BaseStrategy):
         for symbol in self.symbols:
             try:
                 model_path = get_trend_model_path(symbol, TREND_MODEL_VERSION)
-                model = xgb.Booster()
+                model = xgb.XGBClassifier()
                 model.load_model(model_path)
                 self.models[symbol] = model
                 print(f"✅ {symbol} 的 XGBoost 模型載入成功！")
@@ -71,15 +71,21 @@ class XGBoostTrendStrategy(BaseStrategy):
         current_position_value = self.context.portfolio.get_positions().get(symbol.split('/')[0], 0)
 
         # 根據 PPO 的目標倉位調整下單
-        # (這是一個簡化的邏輯，實際應用中可能需要更複雜的計算)
-        if target_position > 0 and current_position_value == 0:
-            amount_to_buy = 0.01 * target_position # 根據 PPO 的輸出調整倉位
-            print(f"PPO 決策 for {symbol}: 執行做多 (Buy) {amount_to_buy}！")
-            self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_buy)
-        elif target_position < 0 and current_position_value == 0:
-            amount_to_sell = 0.01 * abs(target_position)
-            print(f"PPO 決策 for {symbol}: 執行做空 (Sell) {amount_to_sell}！")
-            self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_sell)
+        total_value = self.context.portfolio.get_total_value()
+        current_price = ohlcv['Close'].iloc[-1]
+
+        # 計算目標倉位價值
+        target_position_value = total_value * target_position
+
+        # 計算需要交易的數量
+        amount_to_trade = (target_position_value - current_position_value * current_price) / current_price
+
+        if amount_to_trade > 0:
+            print(f"PPO 決策 for {symbol}: 執行做多 (Buy) {amount_to_trade:.4f}！")
+            self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade)
+        elif amount_to_trade < 0:
+            print(f"PPO 決策 for {symbol}: 執行做空/平倉 (Sell) {abs(amount_to_trade):.4f}！")
+            self.context.exchange.create_order(symbol, 'market', 'sell', abs(amount_to_trade))
         elif target_position == 0 and current_position_value != 0:
             print(f"PPO 決策 for {symbol}: 執行平倉！")
             self.context.exchange.create_order(symbol, 'market', 'sell' if current_position_value > 0 else 'buy', abs(current_position_value))

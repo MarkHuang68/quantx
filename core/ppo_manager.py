@@ -29,7 +29,7 @@ class PPOManager:
         print(f"--- 正在為 PPO 管理器載入 XGBoost 模型: {symbol} ---")
         try:
             model_path = get_trend_model_path(symbol, TREND_MODEL_VERSION)
-            model = xgb.Booster()
+            model = xgb.XGBClassifier()
             model.load_model(model_path)
             print("✅ XGBoost 模型載入成功！")
             return model

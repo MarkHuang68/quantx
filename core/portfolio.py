@@ -1,6 +1,7 @@
 # 檔案: core/portfolio.py
 
 import pandas as pd
+from core.exchange import PaperExchange
 
 class Portfolio:
     def __init__(self, initial_capital, exchange):
@@ -13,7 +14,7 @@ class Portfolio:
         balance = self.exchange.get_balance()
 
         # 在模擬交易中，我們需要手動更新持倉
-        if isinstance(self.exchange, __import__('core.exchange', fromlist=['PaperExchange']).PaperExchange):
+        if isinstance(self.exchange, PaperExchange):
             positions = self.exchange.get_positions()
         else:
             positions = self.exchange.get_positions()

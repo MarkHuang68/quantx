@@ -79,7 +79,7 @@ def prepare_data_for_ppo(symbol, ohlcv_data):
     try:
         # 載入預先訓練好的 XGBoost 模型
         model_path = get_trend_model_path(symbol, TREND_MODEL_VERSION)
-        model = xgb.Booster()
+        model = xgb.XGBClassifier()
         model.load_model(model_path)
     except Exception as e:
         print(f"🛑 錯誤：無法載入 {symbol} 的 XGBoost 模型。請先訓練模型。 {e}")

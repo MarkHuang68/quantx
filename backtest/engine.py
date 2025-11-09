@@ -2,6 +2,7 @@
 
 import pandas as pd
 from tqdm import tqdm
+from core.exchange import PaperExchange
 
 class BacktestEngine:
     def __init__(self, context, strategy, data):
@@ -15,7 +16,7 @@ class BacktestEngine:
 
         # 將數據載入到模擬交易所
         for symbol, df in self.data.items():
-            if isinstance(self.context.exchange, __import__('core.exchange', fromlist=['PaperExchange']).PaperExchange):
+            if isinstance(self.context.exchange, PaperExchange):
                 self.context.exchange.set_kline_data(symbol, df)
 
         # 遍歷數據並觸發策略
@@ -29,7 +30,7 @@ class BacktestEngine:
         # 使用 tqdm 顯示進度條
         for dt in tqdm(self.data[main_symbol].index, desc="回測進度"):
             self.context.current_dt = dt
-            if isinstance(self.context.exchange, __import__('core.exchange', fromlist=['PaperExchange']).PaperExchange):
+            if isinstance(self.context.exchange, PaperExchange):
                 self.context.exchange.set_current_dt(dt)
 
             self.strategy.on_bar(dt)
@@ -46,10 +47,16 @@ class BacktestEngine:
         history.set_index('timestamp', inplace=True)
 
         # 計算績效指標
-        total_return = (history['total_value'][-1] / history['total_value'][0]) - 1
+        total_return = (history['total_value'].iloc[-1] / history['total_value'].iloc[0]) - 1
 
         returns = history['total_value'].pct_change().dropna()
-        sharpe_ratio = (returns.mean() / returns.std()) * (252**0.5) # 假設每日數據
+
+        # 動態計算年化因子
+        time_delta = history.index.to_series().diff().median()
+        periods_per_day = pd.Timedelta(days=1) / time_delta
+        annualization_factor = (periods_per_day * 252)**0.5 # 假設一年 252 個交易日
+
+        sharpe_ratio = (returns.mean() / returns.std()) * annualization_factor if returns.std() != 0 else 0
 
         rolling_max = history['total_value'].cummax()
         daily_drawdown = history['total_value'] / rolling_max - 1.0

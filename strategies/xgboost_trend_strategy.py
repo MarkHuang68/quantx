@@ -68,8 +68,23 @@ class XGBoostTrendStrategy(BaseStrategy):
         xgb_prediction = self._get_xgb_prediction(symbol, ohlcv)
         action = self.ppo_managers[symbol].get_action(ohlcv, portfolio_state, xgb_prediction)
         target_position = self.ppo_managers[symbol].model.env.get_attr('action_map')[0][action]
+        current_position_value = self.context.portfolio.get_positions().get(symbol.split('/')[0], 0)
 
-        # ... (PPO 下單邏輯) ...
+        # 根據 PPO 的目標倉位調整下單
+        # (這是一個簡化的邏輯，實際應用中可能需要更複雜的計算)
+        if target_position > 0 and current_position_value == 0:
+            amount_to_buy = 0.01 * target_position # 根據 PPO 的輸出調整倉位
+            print(f"PPO 決策 for {symbol}: 執行做多 (Buy) {amount_to_buy}！")
+            self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_buy)
+        elif target_position < 0 and current_position_value == 0:
+            amount_to_sell = 0.01 * abs(target_position)
+            print(f"PPO 決策 for {symbol}: 執行做空 (Sell) {amount_to_sell}！")
+            self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_sell)
+        elif target_position == 0 and current_position_value != 0:
+            print(f"PPO 決策 for {symbol}: 執行平倉！")
+            self.context.exchange.create_order(symbol, 'market', 'sell' if current_position_value > 0 else 'buy', abs(current_position_value))
+        else:
+            print(f"PPO 決策 for {symbol}: 持有 (Hold)。")
 
     def _process_symbol_with_rules(self, symbol, dt):
         print(f"\n--- 正在使用規則處理 {symbol} ---")

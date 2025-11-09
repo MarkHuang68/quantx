@@ -77,9 +77,12 @@ class XGBoostTrendStrategy(BaseStrategy):
         # 確保特徵的順序是正確的
         input_df = pd.DataFrame([features_series[model_features]], columns=model_features)
 
-        # 假設模型輸出為: 0 (做空), 1 (空手), 2 (做多)
-        prediction = self.models[symbol].predict(input_df)[0]
-        return int(prediction)
+        # 進行預測，獲取原始訊號 (0=持有, 1=做多, 2=做空)
+        raw_prediction = self.models[symbol].predict(input_df)[0]
+
+        # 統一訊號轉換: 1 -> 1 (做多), 2 -> -1 (做空), 0 -> 0 (持有)
+        signal_map = {1: 1, 2: -1, 0: 0}
+        return signal_map.get(int(raw_prediction), 0)
 
     def _process_symbol_with_ppo(self, symbol, dt, features_series):
         ppo_manager = self.ppo_managers[symbol]
@@ -153,26 +156,21 @@ class XGBoostTrendStrategy(BaseStrategy):
         trade_size_usd = self.context.portfolio.get_total_value() * 0.1
         amount_to_trade = trade_size_usd / current_price
 
-        # --- 全新的、更簡潔的交易邏輯 ---
-        if prediction == 1:  # 目標: 做多
-            if current_position < 0: # 如果是空倉
+        # --- 最终版交易逻辑 (0=持有) ---
+        if prediction == 1:  # 訊號: 做多
+            if current_position < 0: # 如果是空倉 -> 反手做多
                 amount_to_buy = abs(current_position) + amount_to_trade
                 self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_buy)
-            elif current_position == 0: # 如果是空手
+            elif current_position == 0: # 如果是空手 -> 開啟多倉
                 self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade)
-            # 如果已是多倉，不動作
+            # 如果已是多倉，则不动作 (继续持有)
 
-        elif prediction == 2: # 目標: 做空
-            if current_position > 0: # 如果是多倉
+        elif prediction == -1: # 訊號: 做空
+            if current_position > 0: # 如果是多倉 -> 反手做空
                 amount_to_sell = current_position + amount_to_trade
                 self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_sell)
-            elif current_position == 0: # 如果是空手
+            elif current_position == 0: # 如果是空手 -> 開啟空倉
                 self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade)
-            # 如果已是空倉，不動作
+            # 如果已是空倉，则不动作 (继续持有)
 
-        elif prediction == 0:  # 目標: 平倉
-            if current_position > 0: # 如果是多倉
-                self.context.exchange.create_order(symbol, 'market', 'sell', abs(current_position))
-            elif current_position < 0: # 如果是空倉
-                self.context.exchange.create_order(symbol, 'market', 'buy', abs(current_position))
-            # 如果是空手，不動作
+        # 如果 prediction == 0，则不执行任何操作，实现“保持持仓”

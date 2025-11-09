@@ -80,11 +80,6 @@ class PPOManager:
         net_worth_ratio = portfolio_state.get('net_worth_ratio', 1.0)
         account_state = np.array([position, net_worth_ratio])
 
-        # d. 標準化 XGBoost 訊號 (與訓練時保持一致)
-        # 1 (做多) -> 1, 2 (做空) -> -1, 0 (持有) -> 0
-        signal_map = {1: 1, 2: -1, 0: 0}
-        xgb_signal_normalized = signal_map.get(xgb_prediction, 0)
-
-        # e. 組合最終的觀察狀態
-        observation = np.concatenate([latest_features, [xgb_signal_normalized], account_state]).astype(np.float32)
+        # d. 組合最終的觀察狀態 (xgb_prediction 已被標準化為 -1, 0, 1)
+        observation = np.concatenate([latest_features, [xgb_prediction], account_state]).astype(np.float32)
         return observation

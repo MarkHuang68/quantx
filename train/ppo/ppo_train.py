@@ -14,7 +14,7 @@ from train.ppo.ppo_environment import TradingEnvironment, prepare_data_for_ppo
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import DummyVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
-from config.settings import SYMBOLS_TO_TRADE
+from settings import SYMBOLS_TO_TRADE
 
 PPO_HYPERPARAMS = {
     "n_steps": 2048,

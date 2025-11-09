@@ -84,7 +84,7 @@ def create_features_trend(df):
     if df is None:
         return None, None
         
-    print("\n--- 正在計算「進場特徵」---")
+    # print("\n--- 正在計算「進場特徵」---")
 
     close_prices = df['Close']
     high_prices = df['High']

@@ -88,8 +88,8 @@ class XGBoostTrendStrategy(BaseStrategy):
         ppo_manager = self.ppo_managers[symbol]
 
         # DEBUG: 打印每一次 bar 的 ppo_manager 狀態
-        if dt.minute == 0 and dt.second == 0: # 只在整點打印，避免洗版
-            print(f"[DEBUG on_bar] Dt: {dt}, Symbol: {symbol}, Manager ID: {id(ppo_manager)}, Initialized: {ppo_manager.initialized}")
+        # if dt.minute == 0 and dt.second == 0: # 只在整點打印，避免洗版
+        #     print(f"[DEBUG on_bar] Dt: {dt}, Symbol: {symbol}, Manager ID: {id(ppo_manager)}, Initialized: {ppo_manager.initialized}")
 
         # 增加穩健性檢查
         if not ppo_manager.initialized:
@@ -125,16 +125,16 @@ class XGBoostTrendStrategy(BaseStrategy):
         amount_to_trade = (target_position_value - current_position_value * current_price) / current_price
 
         if amount_to_trade > 0:
-            print(f"PPO 決策 for {symbol}: 執行做多 (Buy) {amount_to_trade:.4f}！")
+            # print(f"PPO 決策 for {symbol}: 執行做多 (Buy) {amount_to_trade:.4f}！")
             self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade)
         elif amount_to_trade < 0:
-            print(f"PPO 決策 for {symbol}: 執行做空/平倉 (Sell) {abs(amount_to_trade):.4f}！")
+            # print(f"PPO 決策 for {symbol}: 執行做空/平倉 (Sell) {abs(amount_to_trade):.4f}！")
             self.context.exchange.create_order(symbol, 'market', 'sell', abs(amount_to_trade))
         elif target_position == 0 and current_position_value != 0:
-            print(f"PPO 決策 for {symbol}: 執行平倉！")
+            # print(f"PPO 決策 for {symbol}: 執行平倉！")
             self.context.exchange.create_order(symbol, 'market', 'sell' if current_position_value > 0 else 'buy', abs(current_position_value))
-        else:
-            print(f"PPO 決策 for {symbol}: 持有 (Hold)。")
+        # else:
+        #     print(f"PPO 決策 for {symbol}: 持有 (Hold)。")
 
     def _process_symbol_with_rules(self, symbol, dt, features_series):
         """

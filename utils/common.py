@@ -146,7 +146,7 @@ def create_features_trend(df):
 
         df['OBV'] = talib.OBV(close_prices, volume)
         df['VOLUME_CHANGE'] = df['Volume'].pct_change()
-        df['VOLUME_CHANGE'].replace([np.inf, -np.inf], np.nan, inplace=True)
+        df['VOLUME_CHANGE'] = df['VOLUME_CHANGE'].replace([np.inf, -np.inf], np.nan)
 
         # 以下是幫助ML學習忽略抄襲
 

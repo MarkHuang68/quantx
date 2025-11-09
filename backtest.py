@@ -13,7 +13,7 @@ from core.backtest_engine import BacktestEngine
 from settings import SYMBOLS_TO_TRADE
 from utils.common import fetch_data
 
-def plot_results(results, symbol, data):
+def plot_results(results, symbol, data, timeframe, start_date, end_date):
     """
     繪製回測結果，包含策略表現與 Buy & Hold 的比較。
     """
@@ -29,19 +29,27 @@ def plot_results(results, symbol, data):
 
     # 繪製策略曲線 (藍色)
     plt.plot(history.index, history['total_value'], label='Strategy Equity', color='blue')
-    
+
     # 繪製 Buy & Hold 曲線 (灰色)
     plt.plot(main_symbol_data.index, main_symbol_data['bh_equity'], label=f'Buy & Hold {symbol}', color='grey', linestyle='--')
 
-    plt.title(f'Backtest Results: Strategy vs. Buy & Hold for {symbol}')
+    plt.title(f'Backtest Results: {symbol} ({timeframe})')
     plt.xlabel('Date')
     plt.ylabel('Portfolio Value (USDT)')
     plt.legend()
     plt.grid(True)
 
+    # 建立目錄與檔名
+    output_dir = 'results'
+    os.makedirs(output_dir, exist_ok=True)
+
+    safe_symbol = symbol.replace('/', '-')
+    filename = f"equity_curve_{safe_symbol}_{timeframe}_{start_date}_{end_date}.png"
+    filepath = os.path.join(output_dir, filename)
+
     # 儲存圖表
-    plt.savefig('equity_curve.png')
-    print("資金曲線圖已保存為 equity_curve.png")
+    plt.savefig(filepath)
+    print(f"資金曲線圖已保存為 {filepath}")
 
 
 if __name__ == '__main__':
@@ -103,6 +111,6 @@ if __name__ == '__main__':
 
         # 繪製圖表
         main_symbol = list(data.keys())[0]
-        plot_results(results, main_symbol, data)
+        plot_results(results, main_symbol, data, args.timeframe, args.start, args.end)
     else:
         print("回測未產生任何結果。")

@@ -6,7 +6,7 @@ import xgboost as xgb
 from stable_baselines3 import PPO
 from sklearn.preprocessing import StandardScaler
 
-from config.settings import TREND_MODEL_VERSION, get_trend_model_path
+import settings
 from utils.common import create_features_trend
 
 class PPOManager:
@@ -28,7 +28,7 @@ class PPOManager:
     def _load_xgb_model(self, symbol):
         print(f"--- 正在為 PPO 管理器載入 XGBoost 模型: {symbol} ---")
         try:
-            model_path = get_trend_model_path(symbol, TREND_MODEL_VERSION)
+            model_path = settings.get_trend_model_path(symbol, settings.TREND_MODEL_VERSION)
             model = xgb.XGBClassifier()
             model.load_model(model_path)
             print("✅ XGBoost 模型載入成功！")

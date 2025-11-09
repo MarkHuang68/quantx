@@ -9,3 +9,4 @@ ta
 stable-baselines3
 gymnasium
 python-dotenv
+imbalanced-learn

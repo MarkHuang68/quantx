@@ -21,6 +21,10 @@ class Exchange(ABC):
     def get_positions(self):
         pass
 
+    @abstractmethod
+    def get_latest_price(self, symbol):
+        pass
+
 
 class BinanceExchange(Exchange):
     def __init__(self, api_key, api_secret):
@@ -63,6 +67,10 @@ class BinanceExchange(Exchange):
         portfolio.positions = positions
         print(f"倉位同步完成: {positions}")
 
+    def get_latest_price(self, symbol):
+        ticker = self.exchange.fetch_ticker(symbol)
+        return ticker['last']
+
 
 class CoinbaseExchange(Exchange):
     def __init__(self, api_key, api_secret):
@@ -99,6 +107,10 @@ class CoinbaseExchange(Exchange):
         positions = self.get_positions()
         portfolio.positions = positions
         print(f"倉位同步完成: {positions}")
+
+    def get_latest_price(self, symbol):
+        ticker = self.exchange.fetch_ticker(symbol)
+        return ticker['last']
 
 
 class PaperExchange(Exchange):
@@ -184,3 +196,24 @@ class PaperExchange(Exchange):
 
     def get_positions(self):
         return self._positions
+
+    def get_latest_price(self, symbol):
+        if symbol in self._kline_data and self._current_dt is not None:
+            try:
+                # 首先尝试直接定位
+                if self._current_dt in self._kline_data[symbol].index:
+                    return self._kline_data[symbol].loc[self._current_dt]['close']
+                # 如果找不到，使用 asof 找到最新的有效价格
+                else:
+                    price_series = self._kline_data[symbol]['close']
+                    latest_price = price_series.asof(self._current_dt)
+                    if pd.notna(latest_price):
+                        return latest_price
+            except Exception:
+                pass # 如果出錯，就使用下面的 fallback
+
+        # Fallback: 如果上面的方法都失敗，就返回數據中的最後一個價格
+        if symbol in self._kline_data and not self._kline_data[symbol].empty:
+            return self._kline_data[symbol]['close'].iloc[-1]
+
+        return None # 如果完全沒有數據，返回 None

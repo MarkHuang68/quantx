@@ -7,7 +7,7 @@ import pandas as pd
 import xgboost as xgb
 from sklearn.preprocessing import StandardScaler
 
-from config.settings import TREND_MODEL_VERSION, get_trend_model_path
+import settings
 from utils.common import create_features_trend, create_sequences
 
 class TradingEnvironment(gym.Env):
@@ -24,9 +24,9 @@ class TradingEnvironment(gym.Env):
         self.n_features = len(self.features)
         self.max_timesteps = len(self.df_data) - 1
 
-        # 動作空間: 離散的倉位大小 (-100%, -50%, 0%, 50%, 100%)
-        self.action_space = spaces.Discrete(5)
-        self.action_map = np.array([-1.0, -0.5, 0.0, 0.5, 1.0], dtype=np.float32)
+        # 動作空間: 離散的倉位大小 (-1.0 到 1.0, 間隔 0.2)
+        self.action_map = np.array([-1.0, -0.8, -0.6, -0.4, -0.2, 0.0, 0.2, 0.4, 0.6, 0.8, 1.0], dtype=np.float32)
+        self.action_space = spaces.Discrete(len(self.action_map))
 
         # 觀察狀態空間: [市場特徵, XGBoost訊號, 倉位, 淨值比例]
         low = np.array([-np.inf] * self.n_features + [-1, 0])
@@ -78,7 +78,7 @@ def prepare_data_for_ppo(symbol, ohlcv_data):
 
     try:
         # 載入預先訓練好的 XGBoost 模型
-        model_path = get_trend_model_path(symbol, TREND_MODEL_VERSION)
+        model_path = settings.get_trend_model_path(symbol, settings.TREND_MODEL_VERSION)
         model = xgb.XGBClassifier()
         model.load_model(model_path)
     except Exception as e:

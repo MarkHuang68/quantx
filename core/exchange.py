@@ -3,6 +3,7 @@
 import ccxt
 import pandas as pd
 from abc import ABC, abstractmethod
+import settings
 
 class Exchange(ABC):
     @abstractmethod
@@ -160,12 +161,17 @@ class PaperExchange(Exchange):
 
         base_currency, quote_currency = symbol.split('/')
 
-        if side == 'buy':
-            cost = amount * price
-            if self._balance[quote_currency]['free'] < cost:
-                raise ValueError(f"資金不足，需要 {cost:.2f} {quote_currency}，但只有 {self._balance[quote_currency]['free']:.2f}")
+        # 計算交易總額和手續費
+        trade_value = amount * price
+        fee = trade_value * settings.FEE_RATE
 
-            self._balance[quote_currency]['free'] -= cost
+        if side == 'buy':
+            cost = trade_value
+            # 檢查包含手續費在內的總資金是否足夠
+            if self._balance[quote_currency]['free'] < cost + fee:
+                raise ValueError(f"資金不足，需要 {cost + fee:.2f} {quote_currency} (含手續費)，但只有 {self._balance[quote_currency]['free']:.2f}")
+
+            self._balance[quote_currency]['free'] -= (cost + fee)
             self._positions.setdefault(base_currency, 0)
             self._positions[base_currency] += amount
 
@@ -173,11 +179,11 @@ class PaperExchange(Exchange):
             # 允許做空，移除持倉檢查
             self._positions.setdefault(base_currency, 0)
             self._positions[base_currency] -= amount
-            revenue = amount * price
-            self._balance[quote_currency]['free'] += revenue
+            revenue = trade_value
+            self._balance[quote_currency]['free'] += (revenue - fee)
 
         return {
-            'info': {'symbol': symbol, 'side': side, 'type': type, 'executedQty': amount, 'avgPrice': price},
+            'info': {'symbol': symbol, 'side': side, 'type': type, 'executedQty': amount, 'avgPrice': price, 'fee': fee},
             'id': str(pd.Timestamp.now().timestamp()),
             'timestamp': self._current_dt,
             'datetime': self._current_dt.isoformat(),

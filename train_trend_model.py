@@ -301,8 +301,7 @@ def backtest(model, df_features, features_list):
         df_test['trades'] = df_test['signal'].diff().abs()
         # --- 修改結束 ---
         
-        FEE_RATE = 0.001  # 假設 0.1% 手續費
-        df_test['transaction_costs'] = df_test['trades'] * FEE_RATE
+        df_test['transaction_costs'] = df_test['trades'] * config.settings.FEE_RATE
         
         # 淨收益
         df_test['strategy_net_return'] = df_test['strategy_return'] - df_test['transaction_costs']

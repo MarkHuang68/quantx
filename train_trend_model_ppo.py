@@ -54,7 +54,7 @@ class TradingEnv(gym.Env):
         self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(len(features_list),))  # 狀態空間: 特徵維度
         self.position = 0  # 當前持倉: 0=無, 1=多, -1=空
         self.balance = 1.0  # 初始淨值
-        self.FEE_RATE = 0.001  # 手續費率
+        self.FEE_RATE = config.settings.FEE_RATE  # 手續費率
 
     def reset(self):
         self.current_step = 0
@@ -141,8 +141,7 @@ def train_ppo(df_features, features_list):
         df_test['actual_return'] = df_test['Close'].pct_change()
         df_test['strategy_return'] = df_test['signal'].shift(1) * df_test['actual_return']
         df_test['trades'] = df_test['signal'].diff().abs()
-        FEE_RATE = 0.001
-        df_test['transaction_costs'] = df_test['trades'] * FEE_RATE
+        df_test['transaction_costs'] = df_test['trades'] * config.settings.FEE_RATE
         df_test['strategy_net_return'] = df_test['strategy_return'] - df_test['transaction_costs']
         df_test['strategy_gross_equity'] = (1 + df_test['strategy_return']).cumprod()
         df_test['strategy_net_equity'] = (1 + df_test['strategy_net_return']).cumprod()

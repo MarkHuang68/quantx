@@ -16,6 +16,7 @@ DEFAULT_SYMBOL = SYMBOLS_TO_TRADE[0]
 
 # --- 3. 模型版本控制 ---
 TREND_MODEL_VERSION = "1.0"
+FEE_RATE = 0.001  # 交易手續費 (0.1%)
 
 def get_trend_model_path(symbol, timeframe, version):
     """

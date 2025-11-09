@@ -164,6 +164,8 @@ class PaperExchange(Exchange):
             cost = amount * price
             if self._balance[quote_currency]['free'] >= cost:
                 self._balance[quote_currency]['free'] -= cost
+                # 同步更新 total 餘額
+                self._balance[quote_currency]['total'] -= cost
                 self._positions.setdefault(base_currency, 0)
                 self._positions[base_currency] += amount
             else:
@@ -173,6 +175,8 @@ class PaperExchange(Exchange):
                 self._positions[base_currency] -= amount
                 revenue = amount * price
                 self._balance[quote_currency]['free'] += revenue
+                # 同步更新 total 餘額
+                self._balance[quote_currency]['total'] += revenue
             else:
                 raise ValueError("持倉不足")
 

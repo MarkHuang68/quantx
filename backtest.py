@@ -13,24 +13,35 @@ from core.backtest_engine import BacktestEngine
 from settings import SYMBOLS_TO_TRADE
 from utils.common import fetch_data
 
-def plot_results(results, symbol):
+def plot_results(results, symbol, data):
     """
-    繪製回測結果。
+    繪製回測結果，包含策略表現與 Buy & Hold 的比較。
     """
     history = results['history']
     
-    plt.figure(figsize=(12, 6))
-    plt.plot(history.index, history['total_value'], label='Strategy Equity')
+    # 創建 Buy & Hold 曲線
+    main_symbol_data = data[symbol].copy()
+    initial_price = main_symbol_data['Close'].iloc[0]
+    initial_capital = history['total_value'].iloc[0]
+    main_symbol_data['bh_equity'] = initial_capital * (main_symbol_data['Close'] / initial_price)
+
+    plt.figure(figsize=(14, 7))
+
+    # 繪製策略曲線 (藍色)
+    plt.plot(history.index, history['total_value'], label='Strategy Equity', color='blue')
     
-    plt.title(f'Backtest Results for {symbol}')
+    # 繪製 Buy & Hold 曲線 (灰色)
+    plt.plot(main_symbol_data.index, main_symbol_data['bh_equity'], label=f'Buy & Hold {symbol}', color='grey', linestyle='--')
+
+    plt.title(f'Backtest Results: Strategy vs. Buy & Hold for {symbol}')
     plt.xlabel('Date')
     plt.ylabel('Portfolio Value (USDT)')
     plt.legend()
     plt.grid(True)
-    # 在非 GUI 環境下，我们不调用 plt.show()
-    # plt.show()
-    plt.savefig('backtest_results.png')
-    print("回測結果圖表已保存為 backtest_results.png")
+
+    # 儲存圖表
+    plt.savefig('equity_curve.png')
+    print("資金曲線圖已保存為 equity_curve.png")
 
 
 if __name__ == '__main__':
@@ -92,6 +103,6 @@ if __name__ == '__main__':
 
         # 繪製圖表
         main_symbol = list(data.keys())[0]
-        # plot_results(results, main_symbol)
+        plot_results(results, main_symbol, data)
     else:
         print("回測未產生任何結果。")

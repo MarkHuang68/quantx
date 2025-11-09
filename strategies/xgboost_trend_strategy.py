@@ -113,30 +113,38 @@ class XGBoostTrendStrategy(BaseStrategy):
             print(f"PPO 決策 for {symbol}: 持有 (Hold)。")
 
     def _process_symbol_with_rules(self, symbol, dt, features_series):
-        # 不再需要 ohlcv，因為我們有 features_series
-        # ohlcv = self.context.exchange.get_ohlcv(symbol, '5m', limit=200)
-        # if ohlcv.empty:
-        #     return
-
+        """
+        根據 XGBoost 模型的預測 (0=空手, 1=做多, 2=做空) 來執行交易。
+        """
         prediction = self._get_xgb_prediction(symbol, features_series)
-        current_position = self.context.portfolio.get_positions().get(symbol.split('/')[0], 0)
+
+        # 獲取第一個字作為基礎貨幣 (例如 'ETH/USDT' -> 'ETH')
+        base_currency = symbol.split('/')[0]
+        current_position = self.context.portfolio.get_positions().get(base_currency, 0)
 
         # 獲取當前價格用於下單
         current_price = self.context.exchange.get_latest_price(symbol)
-        if not current_price:
-             print(f"警告：無法獲取 {symbol} 的當前價格，跳過下單。")
+        if not current_price or current_price <= 0:
+             # print(f"警告：無法獲取 {symbol} 的有效價格，跳過下單。")
              return
 
-        # 簡單的倉位大小計算：每次交易總價值的 10%
+        # 倉位大小計算：每次交易總價值的 10%
         trade_size_usd = self.context.portfolio.get_total_value() * 0.1
         amount_to_trade = trade_size_usd / current_price
 
-        if prediction == 2 and current_position == 0: # 做多
-            # print(f"✅ {symbol} 決策: 執行做多 (Buy)！")
-            self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade)
-        elif prediction == 0 and current_position > 0: # 做空 (平多)
-            # print(f"🛑 {symbol} 決策: 執行平倉 (Sell)！")
-            self.context.exchange.create_order(symbol, 'market', 'sell', current_position)
-        else: # 空手
-            # print(f"⬜ {symbol} 決策: 持有 (Hold)。")
-            pass
+        # --- 新的交易邏輯 ---
+        if prediction == 1:  # 訊號: 做多
+            if current_position == 0:
+                # print(f"✅ ({dt}) {symbol} 訊號 [做多], 開倉！")
+                self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade)
+            else:
+                # print(f"⬜ ({dt}) {symbol} 訊號 [做多], 但已持倉, 不動作。")
+                pass
+
+        elif prediction == 2 or prediction == 0:  # 訊號: 做空 或 空手
+            if current_position > 0:
+                # print(f"🛑 ({dt}) {symbol} 訊號 [平倉], 平掉多倉！")
+                self.context.exchange.create_order(symbol, 'market', 'sell', current_position)
+            else:
+                # print(f"⬜ ({dt}) {symbol} 訊號 [平倉/空手], 無多倉可平, 不動作。")
+                pass

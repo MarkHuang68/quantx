@@ -20,7 +20,7 @@ from sklearn.metrics import ConfusionMatrixDisplay
 from imblearn.over_sampling import SMOTE  # 新增: 用於過採樣平衡類別
 
 # --- 1. 引用「設定檔」和「共用工具箱」 ---
-import settings
+import config.settings
 from utils.common import fetch_data, create_features_trend
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
@@ -28,18 +28,20 @@ warnings.simplefilter(action='ignore', category=FutureWarning)
 # --- 新增: 定義「中立區」門檻 ---
 # 漲跌幅在 +/- 0.2% 以內，都視為「持有 (0)」
 # (您可以調整這個值，越大，交易越少)
-HOLD_THRESHOLD = 0.002
+HOLD_THRESHOLD = 0.008
+
+train = False
 
 # --- XGBoost 訓練基礎參數 (分類模型, 添加 class_weight='balanced' 處理不平衡) ---
 XGB_BASE_PARAMS = {
-    'n_estimators': 1000,
+    'n_estimators': 300,
     'learning_rate': 0.013142918568673426,
     'objective': 'multi:softmax',     # 從 'binary:logistic' 改為 'multi:softmax'
     'num_class': 3,                   # 新增: 告訴 XGBoost 我們有 3 個類別 (0=持有, 1=買入, 2=賣出)
     'eval_metric': 'mlogloss',        # 從 'logloss' 改為 'mlogloss'
     'n_jobs': -1,
     'random_state': 42,
-    'early_stopping_rounds': 10,
+    'early_stopping_rounds': 50,
     'max_depth': 5,
     'reg_alpha': 5,
     'reg_lambda': 5,
@@ -181,7 +183,11 @@ def backtest(model, df_features, features_list):
     y = df_model['target']
 
     # 3. 分割訓練/測試集
-    split_index = 0 #int(len(X) * 0.8)  # 80% 訓練, 20% 測試
+    if train:
+        split_index = int(len(X) * 0.8)  # 80% 訓練, 20% 測試
+    else:
+        split_index = 0
+
     X_test = X.iloc[split_index:]
     y_test = y.iloc[split_index:]
 
@@ -312,7 +318,7 @@ def backtest(model, df_features, features_list):
         plt.plot(df_test['bh_equity'], label='Buy & Hold', color='gray')
         plt.plot(df_test['strategy_gross_equity'], label='策略 (未扣費)', color='blue')
         plt.plot(df_test['strategy_net_equity'], label='策略 (扣費後)', color='red')
-        plt.title('回測淨值曲線 (測試集)')
+        plt.title(f'回測淨值曲線 ({args.timeframe})')
         plt.xlabel('時間步')
         plt.ylabel('淨值')
         plt.legend()
@@ -370,7 +376,7 @@ if __name__ == "__main__":
     parser.add_argument('-ed', '--end', type=str, help='回測結束日期 (YYYY-MM-DD)')
     parser.add_argument('-ns', '--no_search_params', action='store_true', help='關閉尋找模型最佳參數')
     parser.add_argument('-l', '--limit', type=int, help=f'K 線筆數限制')
-    parser.add_argument('-v', '--version', type=str, default=settings.TREND_MODEL_VERSION, help=f'要訓練的模型版本 (預設: {settings.TREND_MODEL_VERSION})')
+    parser.add_argument('-v', '--version', type=str, default=config.settings.TREND_MODEL_VERSION, help=f'要訓練的模型版本 (預設: {config.settings.TREND_MODEL_VERSION})')
     parser.add_argument('--show_confidence', action='store_true', help='顯示高信心混淆矩陣 (預設不顯示)')
     parser.add_argument('--show_equity', action='store_true', help='顯示資金曲線 (預設不顯示)')
     parser.add_argument('--show_overfit', action='store_true', help='顯示過擬合檢測學習曲線 (預設不顯示)')
@@ -381,7 +387,7 @@ if __name__ == "__main__":
     # --- 4. 執行訓練 ---
     print(f"--- 開始執行: {args.symbol} ({args.timeframe}), 資料量={args.limit} ---")
 
-    os.makedirs(settings.MODEL_DIR, exist_ok=True)
+    os.makedirs(config.settings.MODEL_DIR, exist_ok=True)
     raw_df = fetch_data(symbol=args.symbol, start_date=args.start, end_date=args.end, timeframe=args.timeframe, total_limit=args.limit)
 
     # --- 計算特徵 ---
@@ -390,7 +396,7 @@ if __name__ == "__main__":
         print(f"特徵計算失敗，結束訓練。")
         exit()
 
-    model_filename = settings.get_trend_model_path(args.symbol, args.timeframe, args.version)
+    model_filename = config.settings.get_trend_model_path(args.symbol, args.timeframe, args.version)
     config_filename = model_filename.replace('.json', '_feature_config.json')
 
     if os.path.exists(model_filename) and not args.force_train:
@@ -399,6 +405,7 @@ if __name__ == "__main__":
         model.load_model(model_filename)
         acc = None  # 不重新計算準確率
     else:
+        train = True
         print("模型不存在或強制訓練，開始訓練...")
         model, acc = train_xgb_classifier(df_features, features_list)
 
@@ -417,7 +424,7 @@ if __name__ == "__main__":
         else:
             print(f"\n✅ 質量門通過！最佳準確率 ({acc * 100:.2f}%) 優於絕對極限 ({abs_min_acc * 100:.2f}%)。")
 
-        model_filename = settings.get_trend_model_path(args.symbol, args.timeframe, args.version)
+        model_filename = config.settings.get_trend_model_path(args.symbol, args.timeframe, args.version)
         config_filename = model_filename.replace('.json', '_feature_config.json')
 
         # 儲存 XGBoost 模型

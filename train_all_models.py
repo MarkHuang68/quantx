@@ -8,7 +8,7 @@
 #   - 不需修改 train_trend_model.py，檢查邏輯全在本腳本。
 
 import subprocess
-import config
+import settings
 import time
 import os
 import argparse  # 用於解析命令行參數
@@ -42,7 +42,7 @@ def train_all_symbols(overwrite=False):
     - overwrite: 若 True，則強制執行訓練 (覆蓋)。
     """
     # 從 config.py 讀取所有 Symbols
-    symbols = config.SYMBOLS_TO_TRADE
+    symbols = settings.SYMBOLS_TO_TRADE
     
     print(f"==================================================")
     print(f"🚀 啟動萬能訓練入口，總共 {len(symbols)} 個資產 (overwrite={overwrite})。")
@@ -56,14 +56,14 @@ def train_all_symbols(overwrite=False):
         print(f"\n--- 開始處理資產: {symbol} ---")
         
         # 參數讀取
-        trend_limit = config.TREND_MODEL_TRAIN_LIMIT
-        trend_version = config.TREND_MODEL_VERSION
+        trend_limit = settings.TREND_MODEL_TRAIN_LIMIT
+        trend_version = settings.TREND_MODEL_VERSION
 
         for tf in timeframes:
             # 建構模型檔案路徑 (調整若實際不同)
-            model_path = config.get_trend_model_path(symbol, tf, config.TREND_MODEL_VERSION)
-            if not os.path.exists(config.MODEL_DIR):
-                os.makedirs(config.MODEL_DIR)  # 若不存在，創建資料夾
+            model_path = settings.get_trend_model_path(symbol, tf, settings.TREND_MODEL_VERSION)
+            if not os.path.exists(settings.MODEL_DIR):
+                os.makedirs(settings.MODEL_DIR)  # 若不存在，創建資料夾
             
             # 檢查是否存在
             if not overwrite and os.path.exists(model_path):

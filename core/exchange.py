@@ -36,7 +36,7 @@ class BinanceExchange(Exchange):
 
     def get_ohlcv(self, symbol, timeframe='1m', limit=100):
         ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         return df
@@ -82,7 +82,7 @@ class CoinbaseExchange(Exchange):
 
     def get_ohlcv(self, symbol, timeframe='1m', limit=100):
         ohlcv = self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
         df.set_index('timestamp', inplace=True)
         return df
@@ -139,7 +139,7 @@ class PaperExchange(Exchange):
             end_idx = df.index.searchsorted(self._current_dt, side='right') - 1
 
         if end_idx < 0:
-            return pd.DataFrame(columns=['open', 'high', 'low', 'close', 'volume'])
+            return pd.DataFrame(columns=['Open', 'High', 'Low', 'Close', 'Volume'])
 
         start_idx = max(0, end_idx - limit + 1)
         return df.iloc[start_idx:end_idx + 1]
@@ -149,11 +149,11 @@ class PaperExchange(Exchange):
         if price is None:
             # 模擬市價單，使用當前 K 線的收盤價
             if symbol in self._kline_data and self._current_dt in self._kline_data[symbol].index:
-                 price = self._kline_data[symbol].loc[self._current_dt]['close']
+                 price = self._kline_data[symbol].loc[self._current_dt]['Close']
             else:
                  # If exact timestamp not found, use the latest available price
                 try:
-                    price_series = self._kline_data[symbol]['close']
+                    price_series = self._kline_data[symbol]['Close']
                     price = price_series.asof(self._current_dt)
                 except Exception as e:
                      raise ValueError(f"無法在 {self._current_dt} 找到 {symbol} 的價格: {e}")
@@ -202,10 +202,10 @@ class PaperExchange(Exchange):
             try:
                 # 首先尝试直接定位
                 if self._current_dt in self._kline_data[symbol].index:
-                    return self._kline_data[symbol].loc[self._current_dt]['close']
+                    return self._kline_data[symbol].loc[self._current_dt]['Close']
                 # 如果找不到，使用 asof 找到最新的有效价格
                 else:
-                    price_series = self._kline_data[symbol]['close']
+                    price_series = self._kline_data[symbol]['Close']
                     latest_price = price_series.asof(self._current_dt)
                     if pd.notna(latest_price):
                         return latest_price
@@ -214,6 +214,6 @@ class PaperExchange(Exchange):
 
         # Fallback: 如果上面的方法都失敗，就返回數據中的最後一個價格
         if symbol in self._kline_data and not self._kline_data[symbol].empty:
-            return self._kline_data[symbol]['close'].iloc[-1]
+            return self._kline_data[symbol]['Close'].iloc[-1]
 
         return None # 如果完全沒有數據，返回 None

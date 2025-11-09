@@ -32,7 +32,7 @@ class Portfolio:
                 except Exception as e:
                     # 在回測中，我們可以使用當前的收盤價
                     if isinstance(self.exchange, __import__('core.exchange', fromlist=['PaperExchange']).PaperExchange):
-                        price = self.exchange._kline_data[f'{asset}/USDT'].loc[dt]['close']
+                        price = self.exchange._kline_data[f'{asset}/USDT'].loc[dt]['Close']
                         total_value += amount * price
                     else:
                         print(f"無法獲取 {asset}/USDT 的價格: {e}")

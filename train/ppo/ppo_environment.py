@@ -78,7 +78,7 @@ def prepare_data_for_ppo(symbol, ohlcv_data):
 
     try:
         # 載入預先訓練好的 XGBoost 模型
-        model_path = settings.get_trend_model_path(symbol, settings.TREND_MODEL_VERSION)
+        model_path = settings.get_trend_model_path(symbol, '1m', settings.TREND_MODEL_VERSION)
         model = xgb.XGBClassifier()
         model.load_model(model_path)
     except Exception as e:

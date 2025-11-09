@@ -10,9 +10,10 @@ from settings import SYMBOLS_TO_TRADE, TREND_MODEL_VERSION, get_trend_model_path
 from core.ppo_manager import PPOManager
 
 class XGBoostTrendStrategy(BaseStrategy):
-    def __init__(self, context, symbols=SYMBOLS_TO_TRADE, use_ppo=False, ppo_model_path=None):
+    def __init__(self, context, symbols=SYMBOLS_TO_TRADE, timeframe='1m', use_ppo=False, ppo_model_path=None):
         super().__init__(context)
         self.symbols = symbols
+        self.timeframe = timeframe
         self.use_ppo = use_ppo
         self.models = {}
         self._load_models()
@@ -26,7 +27,7 @@ class XGBoostTrendStrategy(BaseStrategy):
         print("--- 正在載入 XGBoost 趨勢模型... ---")
         for symbol in self.symbols:
             try:
-                model_path = get_trend_model_path(symbol, TREND_MODEL_VERSION)
+                model_path = get_trend_model_path(symbol, self.timeframe, TREND_MODEL_VERSION)
                 model = xgb.XGBClassifier()
                 model.load_model(model_path)
                 self.models[symbol] = model

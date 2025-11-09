@@ -48,9 +48,8 @@ class XGBoostTrendStrategy(BaseStrategy):
 
     def _get_xgb_prediction(self, symbol, ohlcv):
         df_with_features, features_list = create_features_trend(ohlcv)
-        dmatrix = xgb.DMatrix(df_with_features[features_list].iloc[-1:])
         # 假設模型輸出為: 0 (做空), 1 (空手), 2 (做多)
-        prediction = self.models[symbol].predict(dmatrix)[0]
+        prediction = self.models[symbol].predict(df_with_features[features_list].iloc[-1:])[0]
         return int(prediction)
 
     def _process_symbol_with_ppo(self, symbol, dt):

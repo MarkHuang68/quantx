@@ -89,9 +89,8 @@ def prepare_data_for_ppo(symbol, ohlcv_data):
     df_features, features_list = create_features_trend(ohlcv_data.copy())
 
     # 計算 XGBoost 訊號
-    dmatrix = xgb.DMatrix(df_features[features_list])
     # 假設模型輸出為: 0 (做空), 1 (空手), 2 (做多)
-    df_features['xgb_signal'] = model.predict(dmatrix).astype(int)
+    df_features['xgb_signal'] = model.predict(df_features[features_list]).astype(int)
 
     # 選取 PPO 的輸入特徵 (包括 XGBoost 訊號)
     ppo_features = features_list + ['xgb_signal', 'Close']

@@ -32,8 +32,8 @@ if __name__ == '__main__':
     # 2. 初始化 PaperExchange (注入 Portfolio)
     exchange = PaperExchange(portfolio)
 
-    # 3. 初始化 Context
-    context = Context(exchange, portfolio, 10000)
+    # 3. 初始化 Context (使用新的、更严格的建构函式)
+    context = Context(exchange=exchange, portfolio=portfolio, initial_capital=10000)
 
     # 4. 載入數據
     print("--- 開始載入數據 ---")

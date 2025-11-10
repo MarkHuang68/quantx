@@ -78,8 +78,8 @@ if __name__ == '__main__':
     else:
         exchange = PaperExchange(portfolio)
 
-    # 3. 初始化 Context (現在包含已關聯的 portfolio 和 exchange)
-    context = Context(exchange, portfolio, 10000)
+    # 3. 初始化 Context (使用新的、更严格的建构函式)
+    context = Context(exchange=exchange, portfolio=portfolio, initial_capital=10000)
 
     # ... (策略初始化和模型設定邏輯保持不變) ...
 

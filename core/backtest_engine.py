@@ -47,12 +47,17 @@ class BacktestEngine:
                 if dt in df_features.index:
                     current_features[symbol] = df_features.loc[dt]
 
+            current_prices = {}
+            for symbol in self.data.keys():
+                if dt in self.features_data[symbol].index:
+                    current_prices[symbol] = self.features_data[symbol].loc[dt]['Close']
+
             if current_features:
                 self.strategy.on_bar(dt, current_features)
 
-            self.context.portfolio.update(dt)
+            self.context.portfolio.update(dt, current_prices)
 
-        self.results = self._calculate_performance()
+        self.results = self._calculate_performance(current_prices)
         print("--- 回測結束 ---")
         return self.results
 

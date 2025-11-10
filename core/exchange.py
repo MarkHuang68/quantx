@@ -26,9 +26,15 @@ class Exchange(ABC):
     def get_latest_price(self, symbol):
         pass
 
+    @abstractmethod
+    def close_all_positions(self, portfolio):
+        """平掉所有倉位。"""
+        pass
+
 
 class BinanceExchange(Exchange):
     def __init__(self, api_key, api_secret):
+        self.fee_rate = 0.001 # 幣安的標準費率
         self.exchange = ccxt.binance({
             'apiKey': api_key,
             'secret': api_secret,
@@ -71,6 +77,22 @@ class BinanceExchange(Exchange):
     def get_latest_price(self, symbol):
         ticker = self.exchange.fetch_ticker(symbol)
         return ticker['last']
+
+    def close_all_positions(self, portfolio):
+        print("--- 正在平掉所有幣安倉位... ---")
+        positions = self.get_positions()
+        for symbol_base, amount in positions.items():
+            if symbol_base == 'USDT':
+                continue
+            try:
+                symbol_pair = f"{symbol_base}/USDT"
+                side = 'sell' if amount > 0 else 'buy'
+                abs_amount = abs(amount)
+                print(f"正在平倉 {symbol_pair}: {side} {abs_amount}")
+                self.create_order(symbol_pair, 'market', side, abs_amount)
+            except Exception as e:
+                print(f"平倉 {symbol_pair} 時發生錯誤: {e}")
+        print("--- 所有倉位已發出平倉指令 ---")
 
 
 class CoinbaseExchange(Exchange):
@@ -116,6 +138,7 @@ class CoinbaseExchange(Exchange):
 
 class PaperExchange(Exchange):
     def __init__(self, initial_balance=100000):
+        self.fee_rate = 0.001 # 模擬盤使用與幣安相同的費率
         self._balance = {'USDT': {'free': initial_balance, 'total': initial_balance}}
         self._positions = {}
         self._current_dt = None
@@ -223,3 +246,19 @@ class PaperExchange(Exchange):
             return self._kline_data[symbol]['Close'].iloc[-1]
 
         return None # 如果完全沒有數據，返回 None
+
+    def close_all_positions(self, portfolio):
+        print("--- 正在平掉所有模擬倉位... ---")
+        current_positions = dict(self._positions) # 複製一份以避免在迭代時修改
+        for symbol_base, amount in current_positions.items():
+            if amount == 0:
+                continue
+            try:
+                symbol_pair = f"{symbol_base}/USDT"
+                side = 'sell' if amount > 0 else 'buy'
+                abs_amount = abs(amount)
+                print(f"正在平倉 {symbol_pair}: {side} {abs_amount}")
+                self.create_order(symbol_pair, 'market', side, abs_amount)
+            except Exception as e:
+                print(f"平倉 {symbol_pair} 時發生錯誤: {e}")
+        print("--- 所有模擬倉位已平倉 ---")

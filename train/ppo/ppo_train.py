@@ -4,6 +4,7 @@ import os
 import time
 import argparse
 import sys
+import pandas as pd
 from multiprocessing import cpu_count
 
 # 確保可以引用到上層目錄
@@ -17,6 +18,8 @@ from stable_baselines3.common.callbacks import CheckpointCallback
 from stable_baselines3.common.utils import set_random_seed
 
 from settings import SYMBOLS_TO_TRADE
+
+DATA_DIR = "data"
 
 PPO_HYPERPARAMS = {
     "n_steps": 2048,
@@ -37,43 +40,64 @@ def make_env(df, rank, seed=0):
     set_random_seed(seed)
     return _init
 
-def train_ppo_agent(symbol, csv_path, total_timesteps=1_000_000, output_dir="ppo_models"):
+def train_ppo_agent(total_timesteps=1_000_000, output_dir="ppo_models"):
     """
-    載入數據、準備環境並使用多核心平行訓練 PPO 智能體。
+    載入所有交易對的數據，準備統一的環境，並訓練一個共用的 PPO 智能體。
     """
-    symbol_str = symbol.replace('/', '_')
-    run_name = f"ppo_agent_{symbol_str}_{time.strftime('%Y%m%d_%H%M%S')}"
+    run_name = f"ppo_agent_UNIFIED_{time.strftime('%Y%m%d_%H%M%S')}"
     log_dir = os.path.join(output_dir, "logs", run_name)
 
     print(f"\n=======================================================")
-    print(f"--- 開始訓練 PPO 代理: {symbol} ---")
+    print(f"--- 開始訓練統一的 PPO 風險管理代理 ---")
+    print(f"--- 交易對: {SYMBOLS_TO_TRADE} ---")
     print(f"=======================================================")
 
-    # 1. 載入並準備數據
-    raw_data = load_csv_data(csv_path, symbol=symbol)
-    if raw_data is None:
-        return
-    df_ppo = prepare_data_for_ppo(symbol, raw_data)
-    if df_ppo is None:
+    # 1. 載入並準備所有交易對的數據
+    all_symbols_data = []
+    for symbol in SYMBOLS_TO_TRADE:
+        # 假設數據檔案命名格式為: {DATA_DIR}/{SYMBOL_pair}_{timeframe}.csv, e.g., data/ETHUSDT_1m.csv
+        # 這裡我們需要一個統一的數據檔案命名約定
+        csv_path = os.path.join(DATA_DIR, f"{symbol.replace('/', '')}_1m.csv")
+
+        print(f"\n--- 正在處理 {symbol} 的數據 ---")
+        if not os.path.exists(csv_path):
+            print(f"🛑 警告：找不到 {symbol} 的數據檔案：{csv_path}，已跳過。")
+            continue
+
+        raw_data = load_csv_data(csv_path, symbol=symbol)
+        if raw_data is None:
+            continue
+
+        df_ppo = prepare_data_for_ppo(symbol, raw_data)
+        if df_ppo is not None:
+            all_symbols_data.append(df_ppo)
+
+    if not all_symbols_data:
+        print("🛑 錯誤：沒有任何數據可供訓練。請檢查數據檔案。")
         return
 
-    # 2. 創建多核心 PPO 環境
+    # 2. 合併所有數據集
+    print("\n--- 正在合併所有交易對的數據集 ---")
+    unified_df = pd.concat(all_symbols_data, ignore_index=True)
+    print(f"✅ 統一數據集創建完畢，總共 {len(unified_df)} 筆數據。")
+
+    # 3. 創建多核心 PPO 環境
     try:
         num_cpu = cpu_count()
         print(f"--- 偵測到 {num_cpu} 個 CPU 核心，將用於平行化訓練 ---")
-        env = SubprocVecEnv([make_env(df_ppo, i) for i in range(num_cpu)])
+        env = SubprocVecEnv([make_env(unified_df, i) for i in range(num_cpu)])
     except Exception as e:
         print(f"🛑 錯誤：無法創建 SubprocVecEnv 環境。{e}")
         return
 
-    # 3. 設定回調
+    # 4. 設定回調
     checkpoint_callback = CheckpointCallback(
-        save_freq=max(100000 // num_cpu, 1), # 根據核心數量調整保存頻率
+        save_freq=max(100000 // num_cpu, 1),
         save_path=os.path.join(output_dir, "checkpoints"),
-        name_prefix=f"ppo_checkpoint_{symbol_str}"
+        name_prefix="ppo_checkpoint_UNIFIED"
     )
 
-    # 4. 建立並訓練 PPO 模型
+    # 5. 建立並訓練 PPO 模型
     model = PPO("MlpPolicy", env, **PPO_HYPERPARAMS, seed=42, tensorboard_log=log_dir)
 
     print(f"--- PPO 智能體開始學習 ({total_timesteps} 步) ---")
@@ -82,22 +106,15 @@ def train_ppo_agent(symbol, csv_path, total_timesteps=1_000_000, output_dir="ppo
     training_time = time.time() - start_time
     print(f"\n--- 訓練完成！總耗時: {training_time:.2f} 秒 ---")
 
-    # 5. 儲存最終模型
-    final_save_path = os.path.join(output_dir, f"ppo_agent_{symbol_str}_final.zip")
+    # 6. 儲存最終模型
+    final_save_path = os.path.join(output_dir, "ppo_agent_UNIFIED_final.zip")
     os.makedirs(output_dir, exist_ok=True)
     model.save(final_save_path)
-    print(f"✅ PPO 智能體儲存完畢：{final_save_path}")
+    print(f"✅ 統一 PPO 智能體儲存完畢：{final_save_path}")
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='PPO 智能體平行化訓練腳本')
-    parser.add_argument('-s', '--symbol', type=str, required=True, help='要訓練的交易對 (例如: ETH/USDT)')
-    parser.add_argument('--csv', type=str, required=True, help='包含歷史 K 線數據的 CSV 檔案路徑')
-    parser.add_argument('-t', '--timesteps', type=int, default=1_000_000, help='總訓練步數 (預設: 1,000,000)')
-
+    parser = argparse.ArgumentParser(description='統一 PPO 智能體平行化訓練腳本')
+    parser.add_argument('-t', '--timesteps', type=int, default=2_000_000, help='總訓練步數 (預設: 2,000,000)')
     args = parser.parse_args()
 
-    if args.symbol in SYMBOLS_TO_TRADE:
-        train_ppo_agent(args.symbol, args.csv, args.timesteps)
-    else:
-        print(f"🛑 錯誤：請使用 settings.py 中定義的交易對。")
-        print(f"可用交易對: {SYMBOLS_TO_TRADE}")
+    train_ppo_agent(args.timesteps)

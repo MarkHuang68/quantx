@@ -130,9 +130,6 @@ class XGBoostTrendStrategy(BaseStrategy):
         elif amount_to_trade < 0:
             # print(f"PPO 決策 for {symbol}: 執行做空/平倉 (Sell) {abs(amount_to_trade):.4f}！")
             self.context.exchange.create_order(symbol, 'market', 'sell', abs(amount_to_trade))
-        elif target_position == 0 and current_position_value != 0:
-            # print(f"PPO 決策 for {symbol}: 執行平倉！")
-            self.context.exchange.create_order(symbol, 'market', 'sell' if current_position_value > 0 else 'buy', abs(current_position_value))
         # else:
         #     print(f"PPO 決策 for {symbol}: 持有 (Hold)。")
 

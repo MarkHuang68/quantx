@@ -5,14 +5,19 @@ import os
 # --- 1. 儲存路徑 ---
 MODEL_DIR = 'models'
 
-# --- 2. 您要交易的所有資產 (永續合約) ---
-# 注意：對於 Bybit USDT 永續合約，格式為 'BTC/USDT:USDT'
+# --- 2. 交易與訓練的資產列表 ---
+# 用於線上交易的交易對
 SYMBOLS_TO_TRADE = [
-    'ETH/USDT:USDT',
-    'BTC/USDT:USDT',
-    # 'SOL/USDT:USDT',
-    # 'WLFI/USDT:USDT'
+    'ETHUSDT',
+    'BTCUSDT',
 ]
+
+# 用於模型訓練的交易對
+SYMBOLS_TO_TRAIN = [
+    'ETHUSDT',
+    'BTCUSDT',
+]
+
 DEFAULT_SYMBOL = SYMBOLS_TO_TRADE[0]
 
 # --- 3. 模型版本控制 ---
@@ -22,10 +27,12 @@ FEE_RATE = 0.001  # 交易手續費 (0.1%)
 def get_trend_model_path(symbol, timeframe, version):
     """
     根據 symbol 和 version 生成模型的儲存路徑。
+    'ETHUSDT' -> 'ETHUSDT'
     """
-    # 將 'BTC/USDT:USDT' 轉換為 'BTC_USDT_USDT'
-    symbol_str = symbol.replace('/', '_').replace(':', '_')
+    # 確保 symbol 不包含斜線或冒號
+    symbol_str = symbol.replace('/', '').replace(':', '')
     return os.path.join(MODEL_DIR, f"trend_model_XGB_{symbol_str}_{timeframe}_v{version}.json")
 
 # --- 5. 機器人執行參數 ---
+LEVERAGE = 5  # 全域槓桿設定
 BOT_LOOP_SLEEP_SECONDS = 300

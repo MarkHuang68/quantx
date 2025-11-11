@@ -55,53 +55,45 @@ async def run_live(context, strategy, symbols, timeframe):
     print(f"交易對: {symbols}, K線週期: {timeframe}")
 
     subscription_topics = [[symbol, timeframe] for symbol in symbols]
-
-    # 在開始交易循環前，先為所有交易對設定槓桿
-    from settings import LEVERAGE
-    for symbol in symbols:
-        await context.exchange.set_leverage(symbol, LEVERAGE)
+    last_kline_timestamp = {} # 為每個 symbol 追蹤最後一個已處理的 K 棒時間戳
 
     while True:
         try:
             print("正在連接/重連 WebSocket...")
-            # await context.exchange.connect() # connect 裡面只有 set_hedge_mode，現在可以移到啟動時
 
             while True:
-                ohlcv_stream = await context.exchange.exchange.watch_ohlcv_for_symbols(subscription_topics)
+                ohlcv_by_symbol = await context.exchange.exchange.watch_ohlcv_for_symbols(subscription_topics)
 
-                current_dt = pd.Timestamp.now(tz='UTC')
-                print(f"\n--- [{current_dt.strftime('%Y-%m-%d %H:%M:%S')}] 收到數據 ---")
+                for symbol, tf_data in ohlcv_by_symbol.items():
+                    if timeframe not in tf_data: continue
 
-                print("正在同步倉位...")
-                await context.exchange.sync_positions(context.portfolio)
+                    latest_kline = tf_data[timeframe][-1]
+                    kline_timestamp = latest_kline[0]
 
-                current_features = {}
-                for symbol in symbols:
-                    print(f"正在為 {symbol} 準備數據...")
-                    ohlcv = await context.exchange.get_ohlcv(symbol=symbol, timeframe=timeframe, limit=200)
-                    if ohlcv is None or ohlcv.empty:
-                        print(f"警告：無法獲取 {symbol} 的歷史數據，跳過此輪。")
-                        continue
+                    if kline_timestamp > last_kline_timestamp.get(symbol, 0):
+                        last_kline_timestamp[symbol] = kline_timestamp
 
-                    print(f"正在計算 {symbol} 的特徵...")
-                    df_with_features, _ = create_features_trend(ohlcv)
+                        current_dt = pd.to_datetime(kline_timestamp, unit='ms', utc=True)
+                        print(f"\n--- [{current_dt.strftime('%Y-%m-%d %H:%M:%S')}] 發現 {symbol} 新 K 棒 ---")
 
-                    if df_with_features is not None and not df_with_features.empty:
-                        latest_features = df_with_features.iloc[-1]
-                        current_features[symbol] = latest_features
-                    else:
-                        print(f"警告：無法為 {symbol} 計算特徵。")
+                        await context.exchange.sync_positions(context.portfolio)
 
-                if current_features:
-                    print("觸發策略決策...")
-                    await strategy.on_bar(current_dt, current_features)
-                else:
-                    print("沒有足夠的數據來觸發策略決責。")
+                        ohlcv = await context.exchange.get_ohlcv(symbol=symbol, timeframe=timeframe, limit=200)
+                        if ohlcv is None or ohlcv.empty:
+                            print(f"警告：無法獲取 {symbol} 的歷史數據，跳過。")
+                            continue
 
-                print("正在更新投資組合...")
-                await context.portfolio.update(current_dt)
-                print(f"目前總資產: {context.portfolio.get_total_value():.2f} USDT")
-                print(context.portfolio.get_positions_summary())
+                        df_with_features, _ = create_features_trend(ohlcv)
+
+                        if df_with_features is not None and not df_with_features.empty:
+                            latest_features = {symbol: df_with_features.iloc[-1]}
+                            await strategy.on_bar(current_dt, latest_features)
+                        else:
+                            print(f"警告：無法為 {symbol} 計算特徵。")
+
+                        await context.portfolio.update(current_dt)
+                        print(f"目前總資產: {context.portfolio.get_total_value():.2f} USDT")
+                        print(context.portfolio.get_positions_summary())
 
         except asyncio.CancelledError:
             print("\n--- WebSocket 處理器被取消，安全退出 ---")

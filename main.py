@@ -105,6 +105,7 @@ def run_paper(context, strategy, data):
         df_with_features, _ = create_features_trend(df)
         if df_with_features is not None:
             features_data[symbol] = df_with_features
+        # 確保傳遞給 PaperExchange 的是 ccxt 格式
         context.exchange.set_kline_data(convert_symbol_to_ccxt(symbol), df)
 
     try:

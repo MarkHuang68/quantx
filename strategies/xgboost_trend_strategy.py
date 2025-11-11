@@ -9,6 +9,7 @@ from utils.common import create_features_trend
 from settings import SYMBOLS_TO_TRADE, TREND_MODEL_VERSION, get_trend_model_path
 from core.ppo_manager import PPOManager
 import settings
+from main import convert_symbol_to_ccxt
 
 class XGBoostTrendStrategy(BaseStrategy):
     def __init__(self, context, symbols=SYMBOLS_TO_TRADE, timeframe='1m', use_ppo=False, ppo_model_path=None):
@@ -63,87 +64,80 @@ class XGBoostTrendStrategy(BaseStrategy):
         return signal_map.get(int(raw_prediction), 0)
 
     async def _process_symbol_with_ppo(self, symbol, dt, features_series):
+        ccxt_symbol = convert_symbol_to_ccxt(symbol)
         ppo_manager = self.ppo_managers[symbol]
         if not ppo_manager.initialized:
-            print(f"警告：{symbol} 的 PPO 管理器未成功初始化，跳過 PPO 決策。")
+            print(f"警告：{symbol} 的 PPO 管理器未成功初始化，跳過。")
             return
 
-        ohlcv = await self.context.exchange.get_ohlcv(symbol, '5m', limit=200)
+        ohlcv = await self.context.exchange.get_ohlcv(ccxt_symbol, self.timeframe, limit=200)
         if ohlcv.empty:
             return
 
         positions = self.context.portfolio.get_positions()
-        symbol_positions = positions.get(symbol, {'long': {'contracts': 0}, 'short': {'contracts': 0}})
+        symbol_positions = positions.get(ccxt_symbol, {'long': {'contracts': 0}, 'short': {'contracts': 0}})
         long_pos = symbol_positions['long']['contracts']
         short_pos = symbol_positions['short']['contracts']
         net_position = long_pos - short_pos
 
-        portfolio_state = {
-            'position': net_position,
-            'net_worth_ratio': self.context.portfolio.get_total_value() / self.context.initial_capital
-        }
-
+        portfolio_state = {'position': net_position, 'net_worth_ratio': self.context.portfolio.get_total_value() / self.context.initial_capital}
         xgb_prediction = self._get_xgb_prediction(symbol, features_series)
         action = ppo_manager.get_action(ohlcv, portfolio_state, xgb_prediction)
         target_position_ratio = ppo_manager.action_map[action]
-
         total_value = self.context.portfolio.get_total_value()
         current_price = ohlcv['Close'].iloc[-1]
         
         if long_pos > 0:
             print(f"PPO({symbol}): [平多] {long_pos:.4f}")
-            await self.context.exchange.create_order(symbol, 'market', 'sell', long_pos, params={'position_idx': 1})
+            await self.context.exchange.create_order(ccxt_symbol, 'market', 'sell', long_pos, params={'position_idx': 1})
         if short_pos > 0:
             print(f"PPO({symbol}): [平空] {short_pos:.4f}")
-            await self.context.exchange.create_order(symbol, 'market', 'buy', short_pos, params={'position_idx': 2})
+            await self.context.exchange.create_order(ccxt_symbol, 'market', 'buy', short_pos, params={'position_idx': 2})
 
         if target_position_ratio > 0:
             amount_to_trade = (total_value * target_position_ratio) / current_price
             if amount_to_trade * current_price > 10.0:
                 print(f"PPO({symbol}): [開多] {amount_to_trade:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade, params={'position_idx': 1})
-
+                await self.context.exchange.create_order(ccxt_symbol, 'market', 'buy', amount_to_trade, params={'position_idx': 1})
         elif target_position_ratio < 0:
             amount_to_trade = (total_value * abs(target_position_ratio)) / current_price
             if amount_to_trade * current_price > 10.0:
                 print(f"PPO({symbol}): [開空] {amount_to_trade:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade, params={'position_idx': 2})
+                await self.context.exchange.create_order(ccxt_symbol, 'market', 'sell', amount_to_trade, params={'position_idx': 2})
 
     async def _process_symbol_with_rules(self, symbol, dt, features_series):
+        ccxt_symbol = convert_symbol_to_ccxt(symbol)
         prediction = self._get_xgb_prediction(symbol, features_series)
         positions = self.context.portfolio.get_positions()
-        symbol_positions = positions.get(symbol, {'long': {'contracts': 0}, 'short': {'contracts': 0}})
+        symbol_positions = positions.get(ccxt_symbol, {'long': {'contracts': 0}, 'short': {'contracts': 0}})
         long_position = symbol_positions['long']['contracts']
         short_position = symbol_positions['short']['contracts']
 
-        current_price = await self.context.exchange.get_latest_price(symbol)
+        current_price = await self.context.exchange.get_latest_price(ccxt_symbol)
         if not current_price or current_price <= 0:
              return
 
         trade_size_usd = self.context.portfolio.get_total_value() * 0.1
         amount_to_trade = trade_size_usd / current_price
 
-        # --- 雙向持倉交易邏輯 (使用 position_idx) ---
-        if prediction == 1:  # 訊號: 做多
+        if prediction == 1:
             if long_position == 0:
                 print(f"訊號({symbol}): [開多] {amount_to_trade:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade, params={'position_idx': 1}) # 多頭倉位
+                await self.context.exchange.create_order(ccxt_symbol, 'market', 'buy', amount_to_trade, params={'position_idx': 1})
             if short_position > 0:
                 print(f"訊號({symbol}): [平空] {short_position:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'buy', short_position, params={'position_idx': 2}) # 平空頭倉位
-
-        elif prediction == -1: # 訊號: 做空
+                await self.context.exchange.create_order(ccxt_symbol, 'market', 'buy', short_position, params={'position_idx': 2})
+        elif prediction == -1:
             if short_position == 0:
                 print(f"訊號({symbol}): [開空] {amount_to_trade:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade, params={'position_idx': 2}) # 空頭倉位
+                await self.context.exchange.create_order(ccxt_symbol, 'market', 'sell', amount_to_trade, params={'position_idx': 2})
             if long_position > 0:
                 print(f"訊號({symbol}): [平多] {long_position:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'sell', long_position, params={'position_idx': 1}) # 平多頭倉位
-
-        elif prediction == 0: # 訊號: 平倉
+                await self.context.exchange.create_order(ccxt_symbol, 'market', 'sell', long_position, params={'position_idx': 1})
+        elif prediction == 0:
             if long_position > 0:
                 print(f"訊號({symbol}): [平多] {long_position:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'sell', long_position, params={'position_idx': 1}) # 平多頭倉位
+                await self.context.exchange.create_order(ccxt_symbol, 'market', 'sell', long_position, params={'position_idx': 1})
             if short_position > 0:
                 print(f"訊號({symbol}): [平空] {short_position:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'buy', short_position, params={'position_idx': 2}) # 平空頭倉位
+                await self.context.exchange.create_order(ccxt_symbol, 'market', 'buy', short_position, params={'position_idx': 2})

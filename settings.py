@@ -36,3 +36,4 @@ def get_trend_model_path(symbol, timeframe, version):
 # --- 5. 機器人執行參數 ---
 LEVERAGE = 5  # 全域槓桿設定
 BOT_LOOP_SLEEP_SECONDS = 300
+MAINTENANCE_MARGIN_RATE = 0.005 # 維持保證金率 (Bybit 預設為 0.5%)

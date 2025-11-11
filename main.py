@@ -117,7 +117,7 @@ def run_paper(context, strategy, data):
     print(f"--- 開始模擬回放 (主時間軸: {main_symbol}) ---")
     async def run_paper_async():
         for dt in data[main_symbol].index:
-            context.exchange.set_current_dt(dt)
+            await context.exchange.set_current_dt(dt)
             current_features = {}
             for symbol, df_features in features_data.items():
                 if dt in df_features.index:
@@ -161,11 +161,17 @@ if __name__ == '__main__':
             context.exchange = BinanceExchange(api_key, api_secret)
         elif args.exchange == 'coinbase':
             context.exchange = CoinbaseExchange(api_key, api_secret)
-    elif args.mode == 'paper':
-        if not args.data_dir: raise ValueError("Paper 模式下必須提供 --data-dir")
-        context.exchange = PaperExchange()
 
-    context.portfolio = Portfolio(context.initial_capital, context.exchange)
+    # 將 portfolio 的初始化移到 exchange 初始化之後
+    context.portfolio = Portfolio(context.initial_capital, None) # 暫時設定為 None
+
+    if args.mode == 'paper':
+        if not args.data_dir: raise ValueError("Paper 模式下必須提供 --data-dir")
+        # 現在我們可以傳遞 portfolio 物件
+        context.exchange = PaperExchange(context.portfolio)
+
+    # 將 portfolio 與真實的 exchange 關聯
+    context.portfolio.exchange = context.exchange
     from settings import SYMBOLS_TO_TRADE
     strategy = XGBoostTrendStrategy(context, symbols=SYMBOLS_TO_TRADE, use_ppo=args.use_ppo, ppo_model_path=args.ppo_model)
 

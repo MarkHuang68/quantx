@@ -7,8 +7,8 @@ class Portfolio:
         self.initial_capital = initial_capital
         self.cash = initial_capital
         self.exchange = exchange
-        # 新的倉位結構: {symbol: {'long': position, 'short': position}}
-        # position 是一個字典: {'contracts': float, 'entry_price': float, 'avg_price': float}
+        # 倉位結構: {symbol: {'long': position, 'short': position}}
+        # position 字典: {'contracts': float, 'entry_price': float, 'leverage': int, 'liquidation_price': float}
         self.positions = {}
         self.history = []
 
@@ -24,17 +24,74 @@ class Portfolio:
 
             if symbol not in self.positions:
                 self.positions[symbol] = {
-                    'long': {'contracts': 0, 'entry_price': 0},
-                    'short': {'contracts': 0, 'entry_price': 0}
+                    'long': self._get_empty_position(),
+                    'short': self._get_empty_position()
                 }
 
             self.positions[symbol][side] = {
                 'contracts': float(pos['contracts']),
-                'entry_price': float(pos['entryPrice'])
+                'entry_price': float(pos['entryPrice']),
+                'leverage': float(pos['leverage']),
+                'liquidation_price': float(pos.get('liquidationPrice', 0))
             }
 
         print("--- Portfolio 倉位同步完成 ---")
         print(self.get_positions_summary())
+
+    def _get_empty_position(self):
+        """返回一個空的倉位結構。"""
+        return {'contracts': 0, 'entry_price': 0, 'leverage': 0, 'liquidation_price': 0}
+
+    def update_position(self, symbol, side, amount, price, leverage):
+        """
+        在紙上交易中更新倉位，並計算爆倉價格。
+        :param side: 'long' or 'short'
+        """
+        if symbol not in self.positions:
+            self.positions[symbol] = {
+                'long': self._get_empty_position(),
+                'short': self._get_empty_position()
+            }
+
+        position = self.positions[symbol][side]
+        current_contracts = position['contracts']
+        current_avg_price = position['entry_price']
+
+        # 計算新的平均價格
+        new_total_contracts = current_contracts + amount
+        if new_total_contracts == 0:
+             # 如果倉位被平倉
+            self.positions[symbol][side] = self._get_empty_position()
+            return
+
+        new_avg_price = ((current_avg_price * current_contracts) + (price * amount)) / new_total_contracts
+
+        position['contracts'] = new_total_contracts
+        position['entry_price'] = new_avg_price
+        position['leverage'] = leverage
+
+        # --- 計算爆倉價格 ---
+        # 參考 Bybit 公式:
+        # 多頭爆倉價 = (開倉均價 * (1 - 1/槓桿 - 維持保證金率))
+        # 空頭爆倉價 = (開倉均價 * (1 + 1/槓桿 - 維持保證金率))
+        # 注意：這是一個簡化模型
+        from settings import MAINTENANCE_MARGIN_RATE
+
+        if side == 'long':
+            liquidation_price = new_avg_price * (1 - (1 / leverage) + MAINTENANCE_MARGIN_RATE)
+        elif side == 'short':
+            liquidation_price = new_avg_price * (1 + (1 / leverage) - MAINTENANCE_MARGIN_RATE)
+        else:
+            liquidation_price = 0
+
+        position['liquidation_price'] = liquidation_price
+        print(f"倉位更新: {symbol} [{side}] {new_total_contracts} @ {new_avg_price:.2f}, 預計爆倉價: {liquidation_price:.2f}")
+
+    def close_position(self, symbol, side):
+        """在紙上交易中手動清空一個倉位 (例如，在爆倉時)。"""
+        if symbol in self.positions and side in self.positions[symbol]:
+            self.positions[symbol][side] = self._get_empty_position()
+            print(f"通知: {symbol} 的 {side} 倉位已被強制平倉。")
 
     def sync_spot_positions(self, spot_positions):
         """
@@ -47,14 +104,11 @@ class Portfolio:
                 symbol = f"{asset}/USDT" # 假設都以 USDT 計價
                 if symbol not in self.positions:
                     self.positions[symbol] = {
-                        'long': {'contracts': 0, 'entry_price': 0},
-                        'short': {'contracts': 0, 'entry_price': 0}
+                        'long': self._get_empty_position(),
+                        'short': self._get_empty_position()
                     }
                 # 現貨只有多頭倉位
-                self.positions[symbol]['long'] = {
-                    'contracts': float(amount),
-                    'entry_price': 0  # 現貨的平均價格需要從交易歷史計算，這裡簡化
-                }
+                self.positions[symbol]['long']['contracts'] = float(amount)
 
         print("--- Portfolio 現貨倉位同步完成 ---")
         print(self.get_positions_summary())

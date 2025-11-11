@@ -188,17 +188,17 @@ class CoinbaseExchange(Exchange):
         return ticker['last']
 
 class PaperExchange(Exchange):
-    def __init__(self, initial_balance=100000):
-        self._balance = {'USDT': {'free': initial_balance, 'total': initial_balance}}
-        self._positions = {}
+    def __init__(self, portfolio):
+        self.portfolio = portfolio
         self._current_dt = None
         self._kline_data = {}
 
     def set_kline_data(self, symbol, df):
         self._kline_data[symbol] = df
 
-    def set_current_dt(self, dt):
+    async def set_current_dt(self, dt):
         self._current_dt = dt
+        await self._check_for_liquidations()
 
     async def get_ohlcv(self, symbol, timeframe='1m', limit=100):
         if symbol not in self._kline_data:
@@ -213,31 +213,77 @@ class PaperExchange(Exchange):
         start_idx = max(0, end_idx - limit + 1)
         return df.iloc[start_idx:end_idx + 1]
 
+    async def _check_for_liquidations(self):
+        """檢查並處理爆倉。"""
+        positions_to_liquidate = []
+
+        # 使用 .copy() 來避免在迭代過程中修改字典
+        for symbol, sides in self.portfolio.get_positions().copy().items():
+            latest_price = await self.get_latest_price(symbol)
+            if latest_price is None:
+                continue
+
+            # 檢查多頭倉位
+            long_pos = sides['long']
+            if long_pos['contracts'] > 0 and long_pos['liquidation_price'] > 0:
+                if latest_price <= long_pos['liquidation_price']:
+                    positions_to_liquidate.append((symbol, 'long', long_pos, latest_price))
+
+            # 檢查空頭倉位
+            short_pos = sides['short']
+            if short_pos['contracts'] > 0 and short_pos['liquidation_price'] > 0:
+                if latest_price >= short_pos['liquidation_price']:
+                    positions_to_liquidate.append((symbol, 'short', short_pos, latest_price))
+
+        for symbol, side, position, liquidation_price in positions_to_liquidate:
+            print(f"!!! 爆倉警告 !!!")
+            print(f"時間: {self._current_dt}")
+            print(f"標的: {symbol} [{side}]")
+            print(f"市價: {liquidation_price:.2f} 觸及爆倉價: {position['liquidation_price']:.2f}")
+
+            # 計算虧損 (簡化模型：損失全部保證金)
+            margin_lost = (position['contracts'] * position['entry_price']) / position['leverage']
+            self.portfolio.cash -= margin_lost
+
+            print(f"損失保證金: {margin_lost:.2f} USDT")
+            print(f"剩餘現金: {self.portfolio.cash:.2f} USDT")
+
+            # 從 portfolio 中移除倉位
+            self.portfolio.close_position(symbol, side)
+
     async def create_order(self, symbol, type, side, amount, price=None, params={}):
         if price is None:
             price = await self.get_latest_price(symbol)
-        base_currency, quote_currency = symbol.split('/')
-        trade_value = amount * price
-        fee = trade_value * settings.FEE_RATE
-        if side == 'buy':
-            cost = trade_value
-            if self._balance[quote_currency]['free'] < cost + fee:
-                raise ValueError(f"資金不足")
-            self._balance[quote_currency]['free'] -= (cost + fee)
-            self._positions.setdefault(base_currency, 0)
-            self._positions[base_currency] += amount
-        elif side == 'sell':
-            self._positions.setdefault(base_currency, 0)
-            self._positions[base_currency] -= amount
-            revenue = trade_value
-            self._balance[quote_currency]['free'] += (revenue - fee)
-        return {'info': {}, 'id': str(pd.Timestamp.now().timestamp()), 'timestamp': self._current_dt, 'status': 'closed', 'symbol': symbol, 'type': type, 'side': side, 'amount': amount, 'filled': amount, 'price': price}
+
+        leverage = params.get('leverage', settings.LEVERAGE)
+        position_side = 'long' if side == 'buy' else 'short'
+
+        # 模擬保證金計算
+        margin_required = (amount * price) / leverage
+        fee = (amount * price) * settings.FEE_RATE
+
+        if self.portfolio.cash < margin_required + fee:
+            raise ValueError(f"資金不足 (需要 {margin_required:.2f} USDT, 只有 {self.portfolio.cash:.2f} USDT)")
+
+        self.portfolio.cash -= (margin_required + fee)
+
+        # 更新倉位並計算爆倉價格
+        self.portfolio.update_position(symbol, position_side, amount, price, leverage)
+
+        return {
+            'info': {}, 'id': str(pd.Timestamp.now().timestamp()), 'timestamp': self._current_dt,
+            'status': 'closed', 'symbol': symbol, 'type': type, 'side': side,
+            'amount': amount, 'filled': amount, 'price': price,
+            'cost': margin_required, 'fee': {'cost': fee}
+        }
 
     async def get_balance(self):
-        return self._balance
+        # 模擬從 portfolio 獲取餘額
+        return {'USDT': {'free': self.portfolio.cash, 'total': self.portfolio.get_total_value()}}
 
     async def get_positions(self):
-        return self._positions
+        # 直接從 portfolio 獲取倉位
+        return self.portfolio.get_positions()
 
     async def get_latest_price(self, symbol):
         if symbol in self._kline_data and self._current_dt is not None:

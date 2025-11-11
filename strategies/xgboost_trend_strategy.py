@@ -70,6 +70,7 @@ class XGBoostTrendStrategy(BaseStrategy):
             print(f"警告：{symbol} 的 PPO 管理器未成功初始化，跳過。")
             return
 
+        # 修正：確保使用 ccxt_symbol 和 self.timeframe
         ohlcv = await self.context.exchange.get_ohlcv(ccxt_symbol, self.timeframe, limit=200)
         if ohlcv.empty:
             return
@@ -87,19 +88,22 @@ class XGBoostTrendStrategy(BaseStrategy):
         total_value = self.context.portfolio.get_total_value()
         current_price = ohlcv['Close'].iloc[-1]
         
-        if long_pos > 0:
-            print(f"PPO({symbol}): [平多] {long_pos:.4f}")
+        # 只有在目標倉位與現有倉位反向時，才先平倉
+        if target_position_ratio <= 0 and long_pos > 0:
+            print(f"PPO({symbol}): [反向平多] {long_pos:.4f}")
             await self.context.exchange.create_order(ccxt_symbol, 'market', 'sell', long_pos, params={'position_idx': 1})
-        if short_pos > 0:
-            print(f"PPO({symbol}): [平空] {short_pos:.4f}")
+
+        if target_position_ratio >= 0 and short_pos > 0:
+            print(f"PPO({symbol}): [反向平空] {short_pos:.4f}")
             await self.context.exchange.create_order(ccxt_symbol, 'market', 'buy', short_pos, params={'position_idx': 2})
 
-        if target_position_ratio > 0:
+        # 開新倉
+        if target_position_ratio > 0 and long_pos == 0:
             amount_to_trade = (total_value * target_position_ratio) / current_price
             if amount_to_trade * current_price > 10.0:
                 print(f"PPO({symbol}): [開多] {amount_to_trade:.4f}")
                 await self.context.exchange.create_order(ccxt_symbol, 'market', 'buy', amount_to_trade, params={'position_idx': 1})
-        elif target_position_ratio < 0:
+        elif target_position_ratio < 0 and short_pos == 0:
             amount_to_trade = (total_value * abs(target_position_ratio)) / current_price
             if amount_to_trade * current_price > 10.0:
                 print(f"PPO({symbol}): [開空] {amount_to_trade:.4f}")
@@ -135,9 +139,6 @@ class XGBoostTrendStrategy(BaseStrategy):
                 print(f"訊號({symbol}): [平多] {long_position:.4f}")
                 await self.context.exchange.create_order(ccxt_symbol, 'market', 'sell', long_position, params={'position_idx': 1})
         elif prediction == 0:
-            if long_position > 0:
-                print(f"訊號({symbol}): [平多] {long_position:.4f}")
-                await self.context.exchange.create_order(ccxt_symbol, 'market', 'sell', long_position, params={'position_idx': 1})
-            if short_position > 0:
-                print(f"訊號({symbol}): [平空] {short_position:.4f}")
-                await self.context.exchange.create_order(ccxt_symbol, 'market', 'buy', short_position, params={'position_idx': 2})
+            # 訊號為 0，持倉不動
+            print(f"訊號({symbol}): [持倉] (prediction=0)")
+            pass

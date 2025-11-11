@@ -70,7 +70,10 @@ class BybitExchange(Exchange):
             await self.exchange.set_leverage(leverage, symbol)
             print(f"--- {symbol} 的槓桿已成功設定為 {leverage}x ---")
         except ccxt.ExchangeError as e:
-            print(f"警告：為 {symbol} 設定槓桿失敗: {e}")
+            if 'leverage not modified' in str(e):
+                print(f"--- {symbol} 的槓桿無需修改，已是 {leverage}x ---")
+            else:
+                print(f"警告：為 {symbol} 設定槓桿失敗: {e}")
 
     async def get_ohlcv(self, symbol, timeframe='1m', limit=100):
         ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)

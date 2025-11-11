@@ -27,6 +27,80 @@ class Exchange(ABC):
         pass
 
 
+import ccxt.pro
+
+class BybitExchange(Exchange):
+    def __init__(self, api_key, api_secret, is_testnet=False):
+        """
+        初始化 Bybit 交易所，支援 RESTful 和 WebSocket。
+        :param is_testnet: 是否使用測試網。
+        """
+        config = {
+            'apiKey': api_key,
+            'secret': api_secret,
+            'enableRateLimit': True,
+            'options': {
+                'defaultType': 'swap',  # 預設為 U 本位永續合約
+                'ws': {'pingInterval': 20000}, # WebSocket 心跳
+            },
+        }
+        self.exchange = getattr(ccxt.pro, 'bybit')(config)
+
+        if is_testnet:
+            self.exchange.set_sandbox_mode(True)
+            print("--- Bybit 已設定為 Testnet (沙盒) 模式 ---")
+        else:
+            print("--- Bybit 已設定為 Live (實盤) 模式 ---")
+
+        self.set_hedge_mode()
+
+    def set_hedge_mode(self):
+        """設定為雙向持倉模式 (Hedge Mode)。"""
+        try:
+            # 0: 單向模式, 3: 雙向模式
+            self.exchange.set_position_mode(hedged=True)
+            print("--- Bybit 已成功設定為雙向持倉模式 ---")
+        except ccxt.ExchangeError as e:
+            if 'position mode not modified' in str(e):
+                print("--- 倉位模式無需修改，已是雙向持倉 ---")
+            else:
+                print(f"警告：設定雙向持倉模式失敗: {e}。請手動到 Bybit 網站確認設定。")
+
+    async def get_ohlcv(self, symbol, timeframe='1m', limit=100):
+        """非同步獲取 OHLCV 數據。"""
+        ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        return df
+
+    async def create_order(self, symbol, type, side, amount, price=None, params={}):
+        """非同步創建訂單。"""
+        return await self.exchange.create_order(symbol, type, side, amount, price, params)
+
+    def get_balance(self):
+        # 獲取U本位合約帳戶的USDT餘額
+        balance = self.exchange.fetch_balance(params={'type': 'swap'})
+        return balance.get('USDT', {})
+
+    def get_positions(self):
+        # 獲取U本位合約的所有倉位
+        positions = self.exchange.fetch_positions(params={'type': 'swap'})
+        # 過濾掉沒有持倉的倉位
+        active_positions = [p for p in positions if p.get('contracts') and float(p['contracts']) != 0]
+        return active_positions
+
+    def sync_positions(self, portfolio):
+        print("--- 正在同步 Bybit 倉位 ---")
+        positions = self.get_positions()
+        portfolio.sync_with_exchange(positions)
+        print(f"倉位同步完成")
+
+    def get_latest_price(self, symbol):
+        ticker = self.exchange.fetch_ticker(symbol)
+        return ticker['last']
+
+
 class BinanceExchange(Exchange):
     def __init__(self, api_key, api_secret):
         self.exchange = ccxt.binance({
@@ -64,9 +138,12 @@ class BinanceExchange(Exchange):
 
     def sync_positions(self, portfolio):
         print("--- 正在同步幣安倉位 ---")
-        positions = self.get_positions()
-        portfolio.positions = positions
-        print(f"倉位同步完成: {positions}")
+        # 此處僅為範例，binance 的現貨 sync 邏輯可能更複雜
+        # 這裡的邏輯需要根據 `get_positions` 的回傳格式來調整 portfolio
+        raw_positions = self.get_positions()
+        # 假設 raw_positions 是一個資產:數量的字典
+        portfolio.sync_spot_positions(raw_positions)
+        print(f"倉位同步完成")
 
     def get_latest_price(self, symbol):
         ticker = self.exchange.fetch_ticker(symbol)
@@ -105,9 +182,9 @@ class CoinbaseExchange(Exchange):
 
     def sync_positions(self, portfolio):
         print("--- 正在同步 Coinbase 倉位 ---")
-        positions = self.get_positions()
-        portfolio.positions = positions
-        print(f"倉位同步完成: {positions}")
+        raw_positions = self.get_positions()
+        portfolio.sync_spot_positions(raw_positions)
+        print(f"倉位同步完成")
 
     def get_latest_price(self, symbol):
         ticker = self.exchange.fetch_ticker(symbol)

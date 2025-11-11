@@ -31,9 +31,6 @@ class XGBoostTrendStrategy(BaseStrategy):
                     version=TREND_MODEL_VERSION
                 ) for symbol in self.symbols
             }
-            # DEBUG: 打印初始化時的 ppo_managers 狀態
-            for symbol, manager in self.ppo_managers.items():
-                print(f"[DEBUG __init__] Symbol: {symbol}, Manager ID: {id(manager)}, Initialized: {manager.initialized}")
 
     def _load_models(self):
         print("--- 正在載入 XGBoost 趨勢模型... ---")
@@ -48,157 +45,109 @@ class XGBoostTrendStrategy(BaseStrategy):
                 print(f"🛑 警告：無法載入 {symbol} 的模型。")
                 pass
 
-    def on_bar(self, dt, current_features):
+    async def on_bar(self, dt, current_features):
         """
-        每個時間 K 棒被呼叫一次。
-        dt: 當前時間戳
-        current_features: 一個字典，包含此時間戳下所有 symbol 的預計算特徵 (Pandas Series)
+        每個時間 K 棒被呼叫一次 (非同步版本)。
         """
         for symbol in self.symbols:
             if symbol not in self.models or symbol not in current_features:
-                # print(f"--- ({symbol}) 缺少模型或當前數據，跳過 ---")
                 continue
 
-            # 獲取當前 K 棒的特徵數據
             features_for_symbol = current_features[symbol]
 
             if self.use_ppo:
-                self._process_symbol_with_ppo(symbol, dt, features_for_symbol)
+                await self._process_symbol_with_ppo(symbol, dt, features_for_symbol)
             else:
-                self._process_symbol_with_rules(symbol, dt, features_for_symbol)
+                await self._process_symbol_with_rules(symbol, dt, features_for_symbol)
 
     def _get_xgb_prediction(self, symbol, features_series):
-        """
-        使用預先計算好的特徵 Series 來進行預測。
-        """
-        # XGBoost 模型的特徵順序必須與訓練時完全一致
-        # 我們從模型內部獲取這個順序
         model_features = self.models[symbol].get_booster().feature_names
-
-        # 準備模型需要的輸入 (一個 DataFrame，只有一行)
-        # 確保特徵的順序是正確的
         input_df = pd.DataFrame([features_series[model_features]], columns=model_features)
-
-        # 進行預測，獲取原始訊號 (0=持有, 1=做多, 2=做空)
         raw_prediction = self.models[symbol].predict(input_df)[0]
-
-        # 統一訊號轉換: 1 -> 1 (做多), 2 -> -1 (做空), 0 -> 0 (持有)
         signal_map = {1: 1, 2: -1, 0: 0}
         return signal_map.get(int(raw_prediction), 0)
 
-    def _process_symbol_with_ppo(self, symbol, dt, features_series):
+    async def _process_symbol_with_ppo(self, symbol, dt, features_series):
         ppo_manager = self.ppo_managers[symbol]
-
-        # DEBUG: 打印每一次 bar 的 ppo_manager 狀態
-        # if dt.minute == 0 and dt.second == 0: # 只在整點打印，避免洗版
-        #     print(f"[DEBUG on_bar] Dt: {dt}, Symbol: {symbol}, Manager ID: {id(ppo_manager)}, Initialized: {ppo_manager.initialized}")
-
-        # 增加穩健性檢查
         if not ppo_manager.initialized:
             print(f"警告：{symbol} 的 PPO 管理器未成功初始化，跳過 PPO 決策。")
             return
 
-        # PPO 仍然需要一個小範圍的歷史數據來計算其內部狀態（例如，觀察空間）
-        ohlcv = self.context.exchange.get_ohlcv(symbol, '5m', limit=200)
+        ohlcv = await self.context.exchange.get_ohlcv(symbol, '5m', limit=200)
         if ohlcv.empty:
             return
 
+        positions = self.context.portfolio.get_positions()
+        symbol_positions = positions.get(symbol, {'long': {'contracts': 0}, 'short': {'contracts': 0}})
+        long_pos = symbol_positions['long']['contracts']
+        short_pos = symbol_positions['short']['contracts']
+        net_position = long_pos - short_pos
+
         portfolio_state = {
-            'position': self.context.portfolio.get_positions().get(symbol.split('/')[0], 0),
+            'position': net_position,
             'net_worth_ratio': self.context.portfolio.get_total_value() / self.context.initial_capital
         }
 
-        # 將 XGBoost 訊號傳遞給 PPO
         xgb_prediction = self._get_xgb_prediction(symbol, features_series)
         action = ppo_manager.get_action(ohlcv, portfolio_state, xgb_prediction)
+        target_position_ratio = ppo_manager.action_map[action]
 
-        # 後續邏輯保持不變...
-        target_position = ppo_manager.action_map[action]
-        current_position_value = self.context.portfolio.get_positions().get(symbol.split('/')[0], 0)
-
-        # 根據 PPO 的目標倉位調整下單
         total_value = self.context.portfolio.get_total_value()
         current_price = ohlcv['Close'].iloc[-1]
-
-        # 計算目標倉位價值
-        target_position_value = total_value * target_position
-
-        # 計算需要交易的數量
-        amount_to_trade = (target_position_value - current_position_value * current_price) / current_price
-
-        # --- 新增：手續費感知 (Fee-Aware) 邏輯 ---
-        if amount_to_trade > 0:
-            # 這是一個「買入」訂單
-            balance = self.context.exchange.get_balance()
-            free_cash = balance.get('USDT', {}).get('free', 0)
-            
-            # 計算包含手續費後，我們「真正」能買的最大數量
-            # max_amount * price * (1 + fee_rate) = free_cash
-            max_buy_amount = free_cash / (current_price * (1 + self.fee_rate))
-            
-            # 為了避免浮點數精度問題，再保守一點
-            max_buy_amount *= 0.999 
-
-            if amount_to_trade > max_buy_amount:
-                print(f"PPO 決策 for {symbol}: 倉位 {amount_to_trade:.4f} 超出資金，調整為 {max_buy_amount:.4f} (All-in)")
-                amount_to_trade = max_buy_amount
-            
-            # 避免下單「粉塵」(例如價值低於 10 USDT 的訂單)
-            if (amount_to_trade * current_price) < 10.0:
-                amount_to_trade = 0
         
-        # (可選) 您也可以為 amount_to_trade < 0 (賣出) 添加粉塵檢查
-        elif amount_to_trade < 0:
-            if abs(amount_to_trade * current_price) < 10.0:
-                amount_to_trade = 0
+        if long_pos > 0:
+            print(f"PPO({symbol}): [平多] {long_pos:.4f}")
+            await self.context.exchange.create_order(symbol, 'market', 'sell', long_pos, params={'positionSide': 'long'})
+        if short_pos > 0:
+            print(f"PPO({symbol}): [平空] {short_pos:.4f}")
+            await self.context.exchange.create_order(symbol, 'market', 'buy', short_pos, params={'positionSide': 'short'})
 
-        if amount_to_trade > 0:
-            # print(f"PPO 決策 for {symbol}: 執行做多 (Buy) {amount_to_trade:.4f}！")
-            self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade)
-        elif amount_to_trade < 0:
-            # print(f"PPO 決策 for {symbol}: 執行做空/平倉 (Sell) {abs(amount_to_trade):.4f}！")
-            self.context.exchange.create_order(symbol, 'market', 'sell', abs(amount_to_trade))
-        elif target_position == 0 and current_position_value != 0:
-            # print(f"PPO 決策 for {symbol}: 執行平倉！")
-            self.context.exchange.create_order(symbol, 'market', 'sell' if current_position_value > 0 else 'buy', abs(current_position_value))
-        # else:
-        #     print(f"PPO 決策 for {symbol}: 持有 (Hold)。")
+        if target_position_ratio > 0:
+            amount_to_trade = (total_value * target_position_ratio) / current_price
+            if amount_to_trade * current_price > 10.0:
+                print(f"PPO({symbol}): [開多] {amount_to_trade:.4f}")
+                await self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade, params={'positionSide': 'long'})
 
-    def _process_symbol_with_rules(self, symbol, dt, features_series):
-        """
-        根據 XGBoost 模型的預測 (0=空手, 1=做多, 2=做空) 來執行交易。
-        """
+        elif target_position_ratio < 0:
+            amount_to_trade = (total_value * abs(target_position_ratio)) / current_price
+            if amount_to_trade * current_price > 10.0:
+                print(f"PPO({symbol}): [開空] {amount_to_trade:.4f}")
+                await self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade, params={'positionSide': 'short'})
+
+    async def _process_symbol_with_rules(self, symbol, dt, features_series):
         prediction = self._get_xgb_prediction(symbol, features_series)
+        positions = self.context.portfolio.get_positions()
+        symbol_positions = positions.get(symbol, {'long': {'contracts': 0}, 'short': {'contracts': 0}})
+        long_position = symbol_positions['long']['contracts']
+        short_position = symbol_positions['short']['contracts']
 
-        # 獲取第一個字作為基礎貨幣 (例如 'ETH/USDT' -> 'ETH')
-        base_currency = symbol.split('/')[0]
-        current_position = self.context.portfolio.get_positions().get(base_currency, 0)
-
-        # 獲取當前價格用於下單
         current_price = self.context.exchange.get_latest_price(symbol)
         if not current_price or current_price <= 0:
-             # print(f"警告：無法獲取 {symbol} 的有效價格，跳過下單。")
              return
 
-        # 倉位大小計算：每次交易總價值的 10%
         trade_size_usd = self.context.portfolio.get_total_value() * 0.1
         amount_to_trade = trade_size_usd / current_price
 
-        # --- 最终版交易逻辑 (0=持有) ---
-        if prediction == 1:  # 訊號: 做多
-            if current_position < 0: # 如果是空倉 -> 反手做多
-                amount_to_buy = abs(current_position) + amount_to_trade
-                self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_buy)
-            elif current_position == 0: # 如果是空手 -> 開啟多倉
-                self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade)
-            # 如果已是多倉，则不动作 (继续持有)
+        if prediction == 1:
+            if long_position == 0:
+                print(f"訊號({symbol}): [開多] {amount_to_trade:.4f}")
+                await self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade, params={'positionSide': 'long'})
+            if short_position > 0:
+                print(f"訊號({symbol}): [平空] {short_position:.4f}")
+                await self.context.exchange.create_order(symbol, 'market', 'buy', short_position, params={'positionSide': 'short'})
 
-        elif prediction == -1: # 訊號: 做空
-            if current_position > 0: # 如果是多倉 -> 反手做空
-                amount_to_sell = current_position + amount_to_trade
-                self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_sell)
-            elif current_position == 0: # 如果是空手 -> 開啟空倉
-                self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade)
-            # 如果已是空倉，则不动作 (继续持有)
+        elif prediction == -1:
+            if short_position == 0:
+                print(f"訊號({symbol}): [開空] {amount_to_trade:.4f}")
+                await self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade, params={'positionSide': 'short'})
+            if long_position > 0:
+                print(f"訊號({symbol}): [平多] {long_position:.4f}")
+                await self.context.exchange.create_order(symbol, 'market', 'sell', long_position, params={'positionSide': 'long'})
 
-        # 如果 prediction == 0，则不执行任何操作，实现“保持持仓”
+        elif prediction == 0:
+            if long_position > 0:
+                print(f"訊號({symbol}): [平多] {long_position:.4f}")
+                await self.context.exchange.create_order(symbol, 'market', 'sell', long_position, params={'positionSide': 'long'})
+            if short_position > 0:
+                print(f"訊號({symbol}): [平空] {short_position:.4f}")
+                await self.context.exchange.create_order(symbol, 'market', 'buy', short_position, params={'positionSide': 'short'})

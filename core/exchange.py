@@ -256,25 +256,37 @@ class PaperExchange(Exchange):
             price = await self.get_latest_price(symbol)
 
         leverage = params.get('leverage', settings.LEVERAGE)
-        position_side = 'long' if side == 'buy' else 'short'
-
-        # 模擬保證金計算
-        margin_required = (amount * price) / leverage
         fee = (amount * price) * settings.FEE_RATE
 
-        if self.portfolio.cash < margin_required + fee:
-            raise ValueError(f"資金不足 (需要 {margin_required:.2f} USDT, 只有 {self.portfolio.cash:.2f} USDT)")
+        # 只有在開新倉時才檢查保證金
+        is_opening_new_position = False
+        positions = self.portfolio.get_positions().get(symbol, {})
+        long_pos = positions.get('long', {'contracts': 0})
+        short_pos = positions.get('short', {'contracts': 0})
 
-        self.portfolio.cash -= (margin_required + fee)
+        if side == 'buy' and short_pos['contracts'] == 0:
+            is_opening_new_position = True
+        elif side == 'sell' and long_pos['contracts'] == 0:
+            is_opening_new_position = True
 
-        # 更新倉位並計算爆倉價格
-        self.portfolio.update_position(symbol, position_side, amount, price, leverage)
+        if is_opening_new_position:
+            margin_required = (amount * price) / leverage
+            if self.portfolio.cash < margin_required + fee:
+                raise ValueError(f"資金不足 (開倉需要 {margin_required:.2f} USDT, 只有 {self.portfolio.cash:.2f} USDT)")
+            self.portfolio.cash -= margin_required
+
+        self.portfolio.cash -= fee
+
+        # 更新倉位，接收已實現盈虧
+        realized_pnl = self.portfolio.update_position(symbol, side, amount, price, leverage)
+        self.portfolio.cash += realized_pnl
 
         return {
-            'info': {}, 'id': str(pd.Timestamp.now().timestamp()), 'timestamp': self._current_dt,
+            'info': {'realizedPnl': realized_pnl},
+            'id': str(pd.Timestamp.now().timestamp()), 'timestamp': self._current_dt,
             'status': 'closed', 'symbol': symbol, 'type': type, 'side': side,
             'amount': amount, 'filled': amount, 'price': price,
-            'cost': margin_required, 'fee': {'cost': fee}
+            'cost': (amount * price), 'fee': {'cost': fee}
         }
 
     async def get_balance(self):

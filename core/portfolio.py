@@ -42,28 +42,68 @@ class Portfolio:
         """返回一個空的倉位結構。"""
         return {'contracts': 0, 'entry_price': 0, 'leverage': 0, 'liquidation_price': 0}
 
-    def update_position(self, symbol, side, amount, price, leverage):
+    def update_position(self, symbol, trade_side, amount, price, leverage):
         """
-        在紙上交易中更新倉位，並計算爆倉價格。
-        :param side: 'long' or 'short'
+        (重構版) 在紙上交易中更新倉位，處理開/平/反向倉位，並返回已實現盈虧。
+        :param trade_side: 'buy' or 'sell'
+        :return: realized_pnl (float)
         """
+        realized_pnl = 0
         if symbol not in self.positions:
             self.positions[symbol] = {
                 'long': self._get_empty_position(),
                 'short': self._get_empty_position()
             }
 
+        long_pos = self.positions[symbol]['long']
+        short_pos = self.positions[symbol]['short']
+
+        if trade_side == 'buy':
+            # 可能是開多倉，也可能是平空倉
+            if short_pos['contracts'] > 0:
+                # 優先平空倉
+                close_amount = min(amount, short_pos['contracts'])
+                realized_pnl = (short_pos['entry_price'] - price) * close_amount
+
+                short_pos['contracts'] -= close_amount
+                amount -= close_amount
+                print(f"倉位更新: {symbol} [平空] {close_amount:.4f} @ {price}, 已實現盈虧: {realized_pnl:.2f} USDT")
+
+                if short_pos['contracts'] == 0:
+                    self.positions[symbol]['short'] = self._get_empty_position()
+
+            if amount > 0:
+                # 剩餘數量開多倉 (或加倉)
+                self._update_side_position('long', symbol, amount, price, leverage)
+
+        elif trade_side == 'sell':
+            # 可能是開空倉，也可能是平多倉
+            if long_pos['contracts'] > 0:
+                # 優先平多倉
+                close_amount = min(amount, long_pos['contracts'])
+                realized_pnl = (price - long_pos['entry_price']) * close_amount
+
+                long_pos['contracts'] -= close_amount
+                amount -= close_amount
+                print(f"倉位更新: {symbol} [平多] {close_amount:.4f} @ {price}, 已實現盈虧: {realized_pnl:.2f} USDT")
+
+                if long_pos['contracts'] == 0:
+                    self.positions[symbol]['long'] = self._get_empty_position()
+
+            if amount > 0:
+                # 剩餘數量開空倉 (或加倉)
+                self._update_side_position('short', symbol, amount, price, leverage)
+
+        return realized_pnl
+
+    def _update_side_position(self, side, symbol, amount, price, leverage):
+        """輔助函數，用於開倉或加倉特定方向的倉位。"""
         position = self.positions[symbol][side]
         current_contracts = position['contracts']
         current_avg_price = position['entry_price']
 
-        # 計算新的平均價格
+        # 計算新的平均價格 (加倉)
         new_total_contracts = current_contracts + amount
-        if new_total_contracts == 0:
-             # 如果倉位被平倉
-            self.positions[symbol][side] = self._get_empty_position()
-            return
-
         new_avg_price = ((current_avg_price * current_contracts) + (price * amount)) / new_total_contracts
 
         position['contracts'] = new_total_contracts
@@ -71,21 +111,15 @@ class Portfolio:
         position['leverage'] = leverage
 
         # --- 計算爆倉價格 ---
-        # 參考 Bybit 公式:
-        # 多頭爆倉價 = (開倉均價 * (1 - 1/槓桿 - 維持保證金率))
-        # 空頭爆倉價 = (開倉均價 * (1 + 1/槓桿 - 維持保證金率))
-        # 注意：這是一個簡化模型
         from settings import MAINTENANCE_MARGIN_RATE
-
         if side == 'long':
             liquidation_price = new_avg_price * (1 - (1 / leverage) + MAINTENANCE_MARGIN_RATE)
-        elif side == 'short':
+        else: # short
             liquidation_price = new_avg_price * (1 + (1 / leverage) - MAINTENANCE_MARGIN_RATE)
-        else:
-            liquidation_price = 0
 
         position['liquidation_price'] = liquidation_price
-        print(f"倉位更新: {symbol} [{side}] {new_total_contracts} @ {new_avg_price:.2f}, 預計爆倉價: {liquidation_price:.2f}")
+        log_action = "加倉" if current_contracts > 0 else "開倉"
+        print(f"倉位更新: {symbol} [{log_action}{'多' if side == 'long' else '空'}] {amount:.4f} @ {price} | 新均價: {new_avg_price:.2f}, 總量: {new_total_contracts:.4f}, 爆倉價: {liquidation_price:.2f}")
 
     def close_position(self, symbol, side):
         """在紙上交易中手動清空一個倉位 (例如，在爆倉時)。"""

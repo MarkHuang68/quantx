@@ -1,0 +1,7 @@
+# config.yaml - 總控設定檔
+# 這裡定義所有子配置檔案的路徑
+exchange: conf/exchange.yaml
+symbol: conf/symbol.yaml
+live: conf/live.yaml
+train: conf/train.yaml
+

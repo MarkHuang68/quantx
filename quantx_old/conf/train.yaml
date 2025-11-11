@@ -1,0 +1,144 @@
+# train.yaml - 測試用最小化配置
+
+schedule:
+  ml_train_minutes: 10080      # 每 10080(1W) 分鐘跑一次 ML 訓練
+  strategy_train_minutes: 1440 # 每 1440(1D) 分鐘跑一次 策略訓練
+  train_retry_minutes: 360     # 每 180(3H) 分鐘啟動重新訓練
+  train_window_days: 365
+
+features:
+  htf_timeframe: '1d'  # 在此處定義您想要的更高時間週期 (例如 '1d', '1w')
+
+  ta_features_params:
+    ema_fast: [5, 10]         # 讓 ML 嘗試 5 和 10 兩種長度
+    ema_slow: [20, 30]        # 讓 ML 嘗試 20 和 30 兩種長度
+    rsi_len: [7, 14]          # 讓 ML 嘗試 7 和 14 兩種長度
+    atr_len: 20
+    roc_long: 15
+
+# 🟢 新增：標籤生成策略設定
+labeling:
+  # - max_hours: 48      # 將最長持倉時間延長到 24 小時
+  #   up_k: 10.5          # 要求 2.5 倍 ATR 的止盈距離
+  #   dn_k: 10.5          # 對應 2.5 倍 ATR 的止損距離
+    # 策略 1: 我們目前效果最好的設定
+  - max_hours: 4
+    up_k: 2.5
+    dn_k: 2.5
+  # 策略 2: 嘗試稍微更長線的設定
+  - max_hours: 8
+    up_k: 5.0
+    dn_k: 5.0
+  # 策略 3: 嘗試稍微更長線的設定
+  - max_hours: 48
+    up_k: 10.0
+    dn_k: 10.0
+  # 策略 4: 嘗試稍微更長線的設定
+  - max_hours: 72
+    up_k: 15.0
+    dn_k: 15.0
+
+ml_models:
+  # - name: xgb
+  #   # 🟢 新增：訊號生成參數區塊
+  #   signal_params:
+  #   # 🟢 核心修改：定義多個 gap 值以供內部自動尋優
+  #     gap_threshold: [0.3, 0.6, 0.9, 0.12, 0.15]  # 在此處調整訊號信心門檻 (0.05 ~ 0.2)
+
+  #   params:
+  #     # 🟢 實驗新參數組合
+  #     objective: ["multi:softprob"] # 保持三分類
+  #     eval_metric: ["mlogloss"]
+  #     n_estimators: [150, 200]      # 增加樹的數量
+  #     max_depth: [4, 5]           # 稍微加深樹
+  #     learning_rate: [0.03, 0.05, 0.07]
+  #     subsample: [0.8]        # 隨機抽取 80% 的數據來訓練每棵樹
+  #     colsample_bytree: [0.8]  # 隨機抽取 80% 的特徵來訓練每棵樹
+  #     gamma: [0, 0.1, 0.2]
+  #     min_child_weight: [1, 3]
+
+  # - name: lstm
+  #   params:
+  #     seq_len: 60
+  #     hidden_dim: 64
+  #     batch_size: 32
+  #     epochs: 10
+  #     lr: 0.001
+
+  # - name: hybrid
+  #   params:
+  #     seq_len: 60
+  #     hidden_dim: 64
+  #     emb_dim: 32
+  #     epochs: 8
+  #     lr: 0.001
+  #     xgb:
+  #       max_depth: 3
+  #       n_estimators: 50
+  #       learning_rate: 0.1
+  #       objective: binary:logistic
+
+strategies:
+  - name: macd_divergence
+    params:
+      peak_window: [5, 10, 15]
+
+  # - name: bollinger
+  #   params:
+  #     length: [10, 15, 20]
+  #     stddev: [0.5, 0.8, 1.0, 1.5, 2.0]
+
+  # - name: bollinger_reversal
+  #   params:
+  #     length: [10, 15, 20]
+  #     stddev: [0.5, 0.8, 1.0, 1.5, 2.0]
+
+  # - name: ema_cross
+  #   params:
+  #     fast: [5, 10, 15]
+  #     slow: [20, 30, 50]
+
+  # - name: z_score
+  #   params:
+  #     sma_len: [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+  #     z_th: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+
+  # - name: z_score_reverse
+  #   params:
+  #     sma_len: [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+  #     z_th: [0.5, 1.0, 1.5, 2.0, 2.5, 3.0]
+
+  # - name: rsi_scalper
+  #   params:
+  #     bb_len: [10, 15, 20]
+  #     bb_std: [0.5, 0.8, 1.0, 1.5, 2.0]
+
+# overrides:
+#   - symbol: BTCUSDT
+#     tf: 15m
+#     ml_models:
+#       - name: lstm_xgb
+#         params:
+#           seq_len: 60
+#           hidden_dim: 64
+#           emb_dim: 32
+#     strategies:
+#       - name: ema_cross
+#         params:
+#           fast: [5, 10, 15]
+#           slow: [20, 30, 50]
+
+auto_policy:
+  gate:
+    min_sharpe: 0.8
+    max_mdd: 0.2
+    min_trades: 30
+    min_acc: 0.55
+  weights:
+    sharpe: 0.4
+    winrate: 0.2
+    mdd: 0.2
+    trades: 0.1
+    val_acc: 0.1
+
+debug: true   # 設 false 就會只看到 INFO log

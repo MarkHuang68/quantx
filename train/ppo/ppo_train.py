@@ -57,7 +57,7 @@ def train_unified_ppo_agent(timeframe, start_date, end_date, total_timesteps=2_0
             print(f"🛑 警告: {symbol} 在指定時間範圍內的數據無法載入，將跳過。")
             continue
 
-        df_ppo = prepare_data_for_ppo(symbol, raw_data)
+        df_ppo = prepare_data_for_ppo(symbol, '1m', raw_data)
         if df_ppo is None:
             print(f"🛑 警告: {symbol} 的 PPO 數據準備失敗，將跳過。")
             continue

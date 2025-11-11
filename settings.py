@@ -8,7 +8,7 @@ MODEL_DIR = 'models'
 # --- 2. 您要交易的所有資產 ---
 SYMBOLS_TO_TRADE = [
     'ETH/USDT',
-    # 'BTC/USDT',
+    'BTC/USDT',
     # 'SOL/USDT',
     # 'WLFI/USDT'
 ]

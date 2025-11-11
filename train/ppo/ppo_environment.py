@@ -11,7 +11,7 @@ import settings
 from utils.common import create_features_trend, create_sequences
 
 class TradingEnvironment(gym.Env):
-    def __init__(self, df_data, initial_balance=10000, leverage=5, commission=0.0004):
+    def __init__(self, df_data, initial_balance=10000, leverage=10, commission=0.0004):
         super().__init__()
 
         self.df_data = df_data
@@ -72,14 +72,14 @@ class TradingEnvironment(gym.Env):
         account_state = np.array([self.position, self.net_worth / self.initial_balance])
         return np.concatenate([features, account_state]).astype(np.float32)
 
-def prepare_data_for_ppo(symbol, ohlcv_data):
+def prepare_data_for_ppo(symbol, timeframe, ohlcv_data):
     """
     為 PPO 訓練準備數據，包括計算並標準化 XGBoost 訊號。
     """
     print(f"--- 正在為 {symbol} 準備 PPO 訓練數據 ---")
 
     try:
-        model_path = settings.get_trend_model_path(symbol, '1m', settings.TREND_MODEL_VERSION)
+        model_path = settings.get_trend_model_path(symbol, timeframe, settings.TREND_MODEL_VERSION)
         model = xgb.XGBClassifier()
         model.load_model(model_path)
     except Exception as e:

@@ -92,6 +92,7 @@ if __name__ == '__main__':
         strategy = XGBoostTrendStrategy(
             context,
             symbols=list(data.keys()),
+            timeframe='1m',
             use_ppo=args.use_ppo,
             ppo_model_path=args.ppo_model
         )

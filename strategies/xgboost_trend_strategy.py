@@ -8,12 +8,14 @@ from strategies.base_strategy import BaseStrategy
 from utils.common import create_features_trend
 from settings import SYMBOLS_TO_TRADE, TREND_MODEL_VERSION, get_trend_model_path
 from core.ppo_manager import PPOManager
+import settings
 
 class XGBoostTrendStrategy(BaseStrategy):
     def __init__(self, context, symbols=SYMBOLS_TO_TRADE, timeframe='1m', use_ppo=False, ppo_model_path=None):
         super().__init__(context)
         self.symbols = symbols
         self.timeframe = timeframe
+        self.fee_rate = settings.FEE_RATE
         self.use_ppo = use_ppo
         self.models = {}
         self._load_models()
@@ -123,6 +125,32 @@ class XGBoostTrendStrategy(BaseStrategy):
 
         # 計算需要交易的數量
         amount_to_trade = (target_position_value - current_position_value * current_price) / current_price
+
+        # --- 新增：手續費感知 (Fee-Aware) 邏輯 ---
+        if amount_to_trade > 0:
+            # 這是一個「買入」訂單
+            balance = self.context.exchange.get_balance()
+            free_cash = balance.get('USDT', {}).get('free', 0)
+            
+            # 計算包含手續費後，我們「真正」能買的最大數量
+            # max_amount * price * (1 + fee_rate) = free_cash
+            max_buy_amount = free_cash / (current_price * (1 + self.fee_rate))
+            
+            # 為了避免浮點數精度問題，再保守一點
+            max_buy_amount *= 0.999 
+
+            if amount_to_trade > max_buy_amount:
+                print(f"PPO 決策 for {symbol}: 倉位 {amount_to_trade:.4f} 超出資金，調整為 {max_buy_amount:.4f} (All-in)")
+                amount_to_trade = max_buy_amount
+            
+            # 避免下單「粉塵」(例如價值低於 10 USDT 的訂單)
+            if (amount_to_trade * current_price) < 10.0:
+                amount_to_trade = 0
+        
+        # (可選) 您也可以為 amount_to_trade < 0 (賣出) 添加粉塵檢查
+        elif amount_to_trade < 0:
+            if abs(amount_to_trade * current_price) < 10.0:
+                amount_to_trade = 0
 
         if amount_to_trade > 0:
             # print(f"PPO 決策 for {symbol}: 執行做多 (Buy) {amount_to_trade:.4f}！")

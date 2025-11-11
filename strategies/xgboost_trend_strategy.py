@@ -9,7 +9,7 @@ from utils.common import create_features_trend
 from settings import SYMBOLS_TO_TRADE, TREND_MODEL_VERSION, get_trend_model_path
 from core.ppo_manager import PPOManager
 import settings
-from main import convert_symbol_to_ccxt
+from utils.common import convert_symbol_to_ccxt
 
 class XGBoostTrendStrategy(BaseStrategy):
     def __init__(self, context, symbols=SYMBOLS_TO_TRADE, timeframe='1m', use_ppo=False, ppo_model_path=None):
@@ -89,11 +89,11 @@ class XGBoostTrendStrategy(BaseStrategy):
         current_price = ohlcv['Close'].iloc[-1]
         
         # 只有在目標倉位與現有倉位反向時，才先平倉
-        if target_position_ratio <= 0 and long_pos > 0:
+        if target_position_ratio < 0 and long_pos > 0:
             print(f"PPO({symbol}): [反向平多] {long_pos:.4f}")
             await self.context.exchange.create_order(ccxt_symbol, 'market', 'sell', long_pos, params={'position_idx': 1})
 
-        if target_position_ratio >= 0 and short_pos > 0:
+        if target_position_ratio > 0 and short_pos > 0:
             print(f"PPO({symbol}): [反向平空] {short_pos:.4f}")
             await self.context.exchange.create_order(ccxt_symbol, 'market', 'buy', short_pos, params={'position_idx': 2})
 

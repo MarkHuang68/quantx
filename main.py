@@ -15,17 +15,7 @@ from core.exchange import BinanceExchange, CoinbaseExchange, PaperExchange, Bybi
 from core.data_loader import load_csv_data
 from strategies.xgboost_trend_strategy import XGBoostTrendStrategy
 from core.portfolio import Portfolio
-from utils.common import fetch_data, create_features_trend
-
-def convert_symbol_to_ccxt(symbol: str) -> str:
-    """將 'ETHUSDT' 轉換為 'ETH/USDT:USDT'"""
-    if '/' in symbol: return symbol
-    base = symbol.replace('USDT', '')
-    return f"{base}/USDT:USDT"
-
-def convert_symbol_from_ccxt(ccxt_symbol: str) -> str:
-    """將 'ETH/USDT:USDT' 轉換為 'ETHUSDT'"""
-    return ccxt_symbol.split('/')[0]
+from utils.common import fetch_data, create_features_trend, convert_symbol_to_ccxt, convert_symbol_from_ccxt
 
 async def warm_up(context, symbols, timeframe):
     print("--- 數據預熱階段開始 ---")

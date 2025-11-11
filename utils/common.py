@@ -224,3 +224,13 @@ def create_sequences(data, target, lookback_window=24):
         y.append(target[i])
     X, y = np.array(X), np.array(y)
     return X, y
+
+def convert_symbol_to_ccxt(symbol: str) -> str:
+    """將 'ETHUSDT' 轉換為 'ETH/USDT:USDT'"""
+    if '/' in symbol: return symbol
+    base = symbol.replace('USDT', '')
+    return f"{base}/USDT:USDT"
+
+def convert_symbol_from_ccxt(ccxt_symbol: str) -> str:
+    """將 'ETH/USDT:USDT' 轉換為 'ETHUSDT'"""
+    return ccxt_symbol.split('/')[0]

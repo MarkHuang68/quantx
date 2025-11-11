@@ -3,7 +3,7 @@ ccxt[pro]==4.5.18
 pandas==2.3.3
 xgboost==3.1.1
 scikit-learn==1.7.2
-TA-Lib==0.6.8
+ta
 python-dotenv
 stable-baselines3
 gymnasium

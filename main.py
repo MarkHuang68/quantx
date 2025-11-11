@@ -18,6 +18,35 @@ from core.portfolio import Portfolio
 
 from utils.common import fetch_data, create_features_trend
 
+async def warm_up(context, symbols, timeframe):
+    """
+    在啟動時預載數據並計算初始特徵，但不執行交易。
+    """
+    print("--- 數據預熱階段開始 ---")
+    initial_features = {}
+    for symbol in symbols:
+        print(f"正在為 {symbol} 預載歷史數據...")
+        try:
+            ohlcv = await context.exchange.get_ohlcv(symbol=symbol, timeframe=timeframe, limit=200)
+            if ohlcv is None or ohlcv.empty or len(ohlcv) < 200:
+                print(f"警告：為 {symbol} 預載的數據不足 (共 {len(ohlcv) if ohlcv is not None else 0} 根)，啟動時的指標可能不準確。")
+                continue
+
+            print(f"正在為 {symbol} 計算初始特徵...")
+            df_with_features, _ = create_features_trend(ohlcv)
+
+            if df_with_features is not None and not df_with_features.empty:
+                initial_features[symbol] = df_with_features.iloc[-1]
+                print(f"✅ {symbol} 預熱完成。")
+            else:
+                print(f"警告：無法為 {symbol} 計算初始特徵。")
+        except Exception as e:
+            print(f"🛑 為 {symbol} 預熱數據時發生錯誤: {e}")
+
+    print("--- 數據預熱階段完成 ---")
+    return initial_features
+
+
 async def run_live(context, strategy, symbols, timeframe):
     """
     執行實盤交易 (WebSocket 版本)。
@@ -27,10 +56,15 @@ async def run_live(context, strategy, symbols, timeframe):
 
     subscription_topics = [[symbol, timeframe] for symbol in symbols]
 
+    # 在開始交易循環前，先為所有交易對設定槓桿
+    from settings import LEVERAGE
+    for symbol in symbols:
+        await context.exchange.set_leverage(symbol, LEVERAGE)
+
     while True:
         try:
             print("正在連接/重連 WebSocket...")
-            await context.exchange.connect() # 執行非同步初始化
+            # await context.exchange.connect() # connect 裡面只有 set_hedge_mode，現在可以移到啟動時
 
             while True:
                 ohlcv_stream = await context.exchange.exchange.watch_ohlcv_for_symbols(subscription_topics)
@@ -173,13 +207,26 @@ if __name__ == '__main__':
     )
 
     if args.mode == 'live':
-        try:
-            asyncio.run(run_live(context, strategy, SYMBOLS_TO_TRADE, args.timeframe))
-        except KeyboardInterrupt:
-            print("\n--- 交易機器人已手動停止 ---")
-        finally:
-            print("--- 正在關閉交易所連線 ---")
-            asyncio.run(context.exchange.close())
+        async def main_live():
+            try:
+                # 1. 執行非同步初始化：設定模式和槓桿
+                await context.exchange.connect()
+                from settings import LEVERAGE
+                for symbol in SYMBOLS_TO_TRADE:
+                    await context.exchange.set_leverage(symbol, LEVERAGE)
+
+                # 2. 執行數據預熱
+                await warm_up(context, SYMBOLS_TO_TRADE, args.timeframe)
+
+                # 3. 開始主交易循環
+                await run_live(context, strategy, SYMBOLS_TO_TRADE, args.timeframe)
+            except KeyboardInterrupt:
+                print("\n--- 交易機器人已手動停止 ---")
+            finally:
+                print("--- 正在關閉交易所連線 ---")
+                await context.exchange.close()
+
+        asyncio.run(main_live())
 
     elif args.mode == 'paper':
         data = {}

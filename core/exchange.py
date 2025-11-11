@@ -64,6 +64,14 @@ class BybitExchange(Exchange):
             else:
                 print(f"警告：設定雙向持倉模式失敗: {e}。請手動到 Bybit 網站確認設定。")
 
+    async def set_leverage(self, symbol, leverage):
+        """為指定的交易對設定槓桿。"""
+        try:
+            await self.exchange.set_leverage(leverage, symbol)
+            print(f"--- {symbol} 的槓桿已成功設定為 {leverage}x ---")
+        except ccxt.ExchangeError as e:
+            print(f"警告：為 {symbol} 設定槓桿失敗: {e}")
+
     async def get_ohlcv(self, symbol, timeframe='1m', limit=100):
         ohlcv = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])

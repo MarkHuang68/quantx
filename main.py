@@ -134,9 +134,16 @@ def run_paper(context, strategy, data):
             features_data[symbol] = df_with_features
         context.exchange.set_kline_data(symbol, df)
 
-    main_symbol = list(data.keys())[0]
-    print("--- 開始模擬回放 ---")
-    # 注意：Paper trade 的 on_bar 和 update 仍然是同步的，需要一個 async wrapper
+    # 確保 main_symbol 是一個有效的、已成功載入數據的交易對
+    try:
+        main_symbol = list(data.keys())[0]
+    except IndexError:
+        print("錯誤：數據字典為空，無法開始回測。")
+        return
+
+    print(f"--- 開始模擬回放 (主時間軸: {main_symbol}) ---")
+
+    # 注意：Paper trade 的 on_bar 和 update 是 async 的
     async def run_paper_async():
         for dt in data[main_symbol].index:
             context.exchange.set_current_dt(dt)
@@ -230,12 +237,44 @@ if __name__ == '__main__':
 
     elif args.mode == 'paper':
         data = {}
-        for symbol in SYMBOLS_TO_TRADE:
-            filepath = os.path.join(args.data_dir, f"{symbol.replace('/', '_')}.csv")
-            data[symbol] = load_csv_data(filepath, symbol=symbol)
-            if data[symbol] is None:
-                print(f"警告：找不到 {symbol} 的數據檔案，將跳過。")
-        if data:
-            run_paper(context, strategy, data)
+        # 判斷 --data-dir 是檔案還是目錄
+        if os.path.isfile(args.data_dir) and args.data_dir.endswith('.csv'):
+            print(f"--- 偵測到單一檔案模式 ---")
+            # 從檔名推斷 symbol
+            filename = os.path.basename(args.data_dir)
+            # 假設檔名格式為 'ETHUSDT_1h_...' or 'ETH_USDT_USDT_1h_...'
+            symbol_part = filename.split('_')[0] + '/' + filename.split('_')[1]
+            if ':USDT' in SYMBOLS_TO_TRADE[0]: # 檢查是否為永續合約格式
+                 symbol_part += ':USDT'
+
+            # 確保推斷出的 symbol 在我們的交易列表中
+            if symbol_part in SYMBOLS_TO_TRADE:
+                print(f"從檔名推斷出交易對：{symbol_part}")
+                data[symbol_part] = load_csv_data(args.data_dir, symbol=symbol_part)
+            else:
+                print(f"警告：從檔名 {filename} 推斷出的交易對 {symbol_part} 不在 settings.py 的交易列表中。")
+
+        else: # 目錄模式
+            print(f"--- 偵測到目錄模式 ---")
+            for symbol in SYMBOLS_TO_TRADE:
+                # 將 'BTC/USDT:USDT' 轉換為 'BTC_USDT_USDT'
+                filename_symbol = symbol.replace('/', '_').replace(':', '_')
+                filepath = os.path.join(args.data_dir, f"{filename_symbol}.csv")
+
+                # 為了向後兼容，也檢查舊的格式
+                if not os.path.exists(filepath):
+                    old_filename_symbol = symbol.replace('/', '_').split(':')[0]
+                    filepath = os.path.join(args.data_dir, f"{old_filename_symbol}.csv")
+
+                if os.path.exists(filepath):
+                    data[symbol] = load_csv_data(filepath, symbol=symbol)
+                else:
+                    data[symbol] = None
+
+        # 過濾掉載入失敗的數據
+        valid_data = {s: d for s, d in data.items() if d is not None and not d.empty}
+
+        if valid_data:
+            run_paper(context, strategy, valid_data)
         else:
-            print("錯誤：找不到任何有效的數據檔案。")
+            print("錯誤：找不到任何有效的數據檔案來執行回測。")

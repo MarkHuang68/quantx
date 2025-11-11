@@ -46,15 +46,10 @@ class XGBoostTrendStrategy(BaseStrategy):
                 pass
 
     async def on_bar(self, dt, current_features):
-        """
-        每個時間 K 棒被呼叫一次 (非同步版本)。
-        """
         for symbol in self.symbols:
             if symbol not in self.models or symbol not in current_features:
                 continue
-
             features_for_symbol = current_features[symbol]
-
             if self.use_ppo:
                 await self._process_symbol_with_ppo(symbol, dt, features_for_symbol)
             else:
@@ -97,22 +92,22 @@ class XGBoostTrendStrategy(BaseStrategy):
         
         if long_pos > 0:
             print(f"PPO({symbol}): [平多] {long_pos:.4f}")
-            await self.context.exchange.create_order(symbol, 'market', 'sell', long_pos, params={'positionSide': 'long'})
+            await self.context.exchange.create_order(symbol, 'market', 'sell', long_pos, params={'position_idx': 1})
         if short_pos > 0:
             print(f"PPO({symbol}): [平空] {short_pos:.4f}")
-            await self.context.exchange.create_order(symbol, 'market', 'buy', short_pos, params={'positionSide': 'short'})
+            await self.context.exchange.create_order(symbol, 'market', 'buy', short_pos, params={'position_idx': 2})
 
         if target_position_ratio > 0:
             amount_to_trade = (total_value * target_position_ratio) / current_price
             if amount_to_trade * current_price > 10.0:
                 print(f"PPO({symbol}): [開多] {amount_to_trade:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade, params={'positionSide': 'long'})
+                await self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade, params={'position_idx': 1})
 
         elif target_position_ratio < 0:
             amount_to_trade = (total_value * abs(target_position_ratio)) / current_price
             if amount_to_trade * current_price > 10.0:
                 print(f"PPO({symbol}): [開空] {amount_to_trade:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade, params={'positionSide': 'short'})
+                await self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade, params={'position_idx': 2})
 
     async def _process_symbol_with_rules(self, symbol, dt, features_series):
         prediction = self._get_xgb_prediction(symbol, features_series)
@@ -128,26 +123,27 @@ class XGBoostTrendStrategy(BaseStrategy):
         trade_size_usd = self.context.portfolio.get_total_value() * 0.1
         amount_to_trade = trade_size_usd / current_price
 
-        if prediction == 1:
+        # --- 雙向持倉交易邏輯 (使用 position_idx) ---
+        if prediction == 1:  # 訊號: 做多
             if long_position == 0:
                 print(f"訊號({symbol}): [開多] {amount_to_trade:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade, params={'positionSide': 'long'})
+                await self.context.exchange.create_order(symbol, 'market', 'buy', amount_to_trade, params={'position_idx': 1}) # 多頭倉位
             if short_position > 0:
                 print(f"訊號({symbol}): [平空] {short_position:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'buy', short_position, params={'positionSide': 'short'})
+                await self.context.exchange.create_order(symbol, 'market', 'buy', short_position, params={'position_idx': 2}) # 平空頭倉位
 
-        elif prediction == -1:
+        elif prediction == -1: # 訊號: 做空
             if short_position == 0:
                 print(f"訊號({symbol}): [開空] {amount_to_trade:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade, params={'positionSide': 'short'})
+                await self.context.exchange.create_order(symbol, 'market', 'sell', amount_to_trade, params={'position_idx': 2}) # 空頭倉位
             if long_position > 0:
                 print(f"訊號({symbol}): [平多] {long_position:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'sell', long_position, params={'positionSide': 'long'})
+                await self.context.exchange.create_order(symbol, 'market', 'sell', long_position, params={'position_idx': 1}) # 平多頭倉位
 
-        elif prediction == 0:
+        elif prediction == 0: # 訊號: 平倉
             if long_position > 0:
                 print(f"訊號({symbol}): [平多] {long_position:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'sell', long_position, params={'positionSide': 'long'})
+                await self.context.exchange.create_order(symbol, 'market', 'sell', long_position, params={'position_idx': 1}) # 平多頭倉位
             if short_position > 0:
                 print(f"訊號({symbol}): [平空] {short_position:.4f}")
-                await self.context.exchange.create_order(symbol, 'market', 'buy', short_position, params={'positionSide': 'short'})
+                await self.context.exchange.create_order(symbol, 'market', 'buy', short_position, params={'position_idx': 2}) # 平空頭倉位

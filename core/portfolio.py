@@ -89,13 +89,13 @@ class Portfolio:
         print(f"注意：update_position_from_trade 尚未完全實現，依賴 sync。")
 
 
-    def update(self, dt):
+    async def update(self, dt):
         """
-        更新投資組合的總價值。
+        更新投資組合的總價值 (非同步版本)。
         """
         # 實盤中，我們更信任交易所回傳的總權益
         try:
-            balance_info = self.exchange.get_balance()
+            balance_info = await self.exchange.get_balance()
             total_value = balance_info.get('total', self.cash) # 使用 total equity
             self.cash = balance_info.get('free', self.cash) # 更新可用現金
         except Exception as e:
@@ -104,7 +104,7 @@ class Portfolio:
 
             # 加上所有倉位的未實現盈虧
             for symbol, sides in self.positions.items():
-                latest_price = self.exchange.get_latest_price(symbol)
+                latest_price = await self.exchange.get_latest_price(symbol)
                 if not latest_price: continue
 
                 # 多頭倉位

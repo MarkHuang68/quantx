@@ -121,7 +121,7 @@ class XGBoostTrendStrategy(BaseStrategy):
         long_position = symbol_positions['long']['contracts']
         short_position = symbol_positions['short']['contracts']
 
-        current_price = self.context.exchange.get_latest_price(symbol)
+        current_price = await self.context.exchange.get_latest_price(symbol)
         if not current_price or current_price <= 0:
              return
 

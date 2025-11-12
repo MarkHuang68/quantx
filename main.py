@@ -129,9 +129,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='交易機器人主程式')
     parser.add_argument('--mode', type=str, choices=['live', 'paper'], required=True)
     parser.add_argument('--exchange', type=str, choices=['binance', 'coinbase', 'bybit'], default='bybit')
-    parser.add_argument('--timeframe', type=str, default='5m')
+    parser.add_argument('--timeframe', type=str, default='5m', help='K 線時間週期 (例如: 5m, 15m, 1h)')
+    parser.add_argument('--start', type=str, help='模擬/回測起始日期 (YYYY-MM-DD)')
+    parser.add_argument('--end', type=str, help='模擬/回測結束日期 (YYYY-MM-DD)')
     parser.add_argument('--testnet', action='store_true')
-    parser.add_argument('--data-dir', type=str)
     parser.add_argument('--use-ppo', action='store_true')
     parser.add_argument('--ppo-model', type=str)
     args = parser.parse_args()
@@ -156,7 +157,8 @@ if __name__ == '__main__':
     context.portfolio = Portfolio(context.initial_capital, None) # 暫時設定為 None
 
     if args.mode == 'paper':
-        if not args.data_dir: raise ValueError("Paper 模式下必須提供 --data-dir")
+        if not args.start or not args.end:
+            raise ValueError("Paper 模式下必須提供 --start 和 --end 日期")
         # 現在我們可以傳遞 portfolio 物件
         context.exchange = PaperExchange(context.portfolio)
 
@@ -181,21 +183,19 @@ if __name__ == '__main__':
                 await context.exchange.close()
         asyncio.run(main_live())
     elif args.mode == 'paper':
+        print("--- [Paper Mode] 開始載入數據 ---")
         data = {}
-        if os.path.isfile(args.data_dir) and args.data_dir.endswith('.csv'):
-            symbol_part = os.path.basename(args.data_dir).split('_')[0]
-            if symbol_part in SYMBOLS_TO_TRADE:
-                data[symbol_part] = load_csv_data(args.data_dir, symbol=symbol_part)
+        for symbol in SYMBOLS_TO_TRADE:
+            print(f"正在獲取 {symbol} 的數據...")
+            raw_df = fetch_data(symbol=symbol, start_date=args.start, end_date=args.end, timeframe=args.timeframe)
+            if raw_df is not None and not raw_df.empty:
+                data[symbol] = raw_df
+                print(f"✅ {symbol} 數據載入成功，共 {len(raw_df)} 行。")
+            else:
+                print(f"警告：找不到 {symbol} 在指定時間範圍內的數據，將跳過。")
+
+        if not data:
+            print("錯誤：找不到任何有效的數據來執行模擬交易。")
         else:
-            for symbol in SYMBOLS_TO_TRADE:
-                filename_symbol = symbol.replace('/', '').replace(':', '')
-                filepath = os.path.join(args.data_dir, f"{filename_symbol}.csv")
-                if os.path.exists(filepath):
-                    data[symbol] = load_csv_data(filepath, symbol=symbol)
-                else:
-                    data[symbol] = None
-        valid_data = {s: d for s, d in data.items() if d is not None and not d.empty}
-        if valid_data:
-            run_paper(context, strategy, valid_data)
-        else:
-            print("錯誤：找不到任何有效的數據檔案來執行回測。")
+            print("--- 數據載入完成 ---")
+            run_paper(context, strategy, data)

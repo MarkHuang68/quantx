@@ -14,7 +14,7 @@ from train.ppo.ppo_environment import TradingEnvironment, prepare_data_for_ppo
 from stable_baselines3 import PPO
 from stable_baselines3.common.vec_env import SubprocVecEnv
 from stable_baselines3.common.callbacks import CheckpointCallback
-from settings import SYMBOLS_TO_TRADE
+from settings import SYMBOLS_TO_TRAIN
 
 PPO_HYPERPARAMS = {
     "n_steps": 2048,
@@ -43,12 +43,12 @@ def train_unified_ppo_agent(timeframe, start_date, end_date, total_timesteps=2_0
     print(f"\n=======================================================")
     print(f"--- 開始為所有交易對訓練統一 PPO 模型 ({timeframe}) ---")
     print(f"--- 時間範圍: {start_date} to {end_date} ---")
-    print(f"--- 交易對: {SYMBOLS_TO_TRADE} ---")
+    print(f"--- 交易對: {SYMBOLS_TO_TRAIN} ---")
     print(f"=======================================================")
 
     # 1. 為每個交易對載入數據並建立環境
     env_makers = []
-    for symbol in SYMBOLS_TO_TRADE:
+    for symbol in SYMBOLS_TO_TRAIN:
         print(f"\n--- 正在處理交易對: {symbol} ---")
 
         # 使用新的時間參數來獲取數據

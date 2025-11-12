@@ -11,7 +11,7 @@ from core.exchange import PaperExchange
 from core.portfolio import Portfolio
 from strategies.xgboost_trend_strategy import XGBoostTrendStrategy
 from core.backtest_engine import BacktestEngine
-from settings import SYMBOLS_TO_TRADE
+from settings import SYMBOLS_TO_TRAIN
 from utils.common import fetch_data
 
 def plot_results(results, symbol, data, timeframe, start_date, end_date):
@@ -66,14 +66,15 @@ if __name__ == '__main__':
 
     # 1. 初始化回測環境
     context = Context()
-    context.exchange = PaperExchange()
     context.portfolio = Portfolio(context.initial_capital, context.exchange)
+    context.exchange = PaperExchange(context.portfolio)
+
 
     # 2. 載入數據
     print("--- 開始載入數據 ---")
     data = {}
     # (為了測試，我们暂时只用一个 symbol)
-    symbols_to_run = SYMBOLS_TO_TRADE
+    symbols_to_run = SYMBOLS_TO_TRAIN
     for symbol in symbols_to_run:
         print(f"正在獲取 {symbol} 的數據...")
         raw_df = fetch_data(symbol=symbol, start_date=args.start, end_date=args.end, timeframe=args.timeframe)

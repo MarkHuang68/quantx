@@ -267,63 +267,6 @@ def backtest(model, df_features, features_list):
             plt.show()
         # --- 修改結束 ---
 
-    # --- 向量化回測 (預設不顯示，需 --show_equity) ---
-    if args.show_equity:
-        print("\n--- 向量化回測 (測試集) ---")
-        df_test = df_model.iloc[split_index:].copy()  # 測試集數據
-        
-        # 計算 actual_return (實際報酬率)
-        df_test['actual_return'] = df_test['Close'].pct_change()
-        
-        # --- 關鍵修改: 重新定義 "持有" 訊號 ---
-        
-        # 1. 將 "持有(0)" 映射為 NaN (Not a Number)
-        signal_map = {0: np.nan, 1: 1, 2: -1}
-        
-        # 2. 轉換 y_pred 訊號
-        y_pred_series = pd.Series(y_pred, index=X_test.index)
-        df_test['signal'] = y_pred_series.map(signal_map)
-        
-        # 3. 使用 'ffill' (forward-fill) 填充 NaN
-        #    這會讓 "持有" 訊號自動繼承前一筆的倉位 (1 或 -1)
-        df_test['signal'] = df_test['signal'].ffill()
-        
-        # 4. 填充最開頭可能存在的 NaN (代表期初空手)
-        df_test['signal'] = df_test['signal'].fillna(0)
-        
-        # 策略毛收益
-        # 訊號 0 (持有) 將導致報酬為 0，這正是我們想要的
-        df_test['strategy_return'] = df_test['signal'].shift(1) * df_test['actual_return']
-        
-        # 計算交易次數 (signal 變化時)
-        # 0 -> 1 (開倉), 1 -> 0 (平倉), 1 -> -1 (反轉)
-        # .diff().abs() 會正確計算這些變化
-        df_test['trades'] = df_test['signal'].diff().abs()
-        # --- 修改結束 ---
-        
-        df_test['transaction_costs'] = df_test['trades'] * settings.FEE_RATE
-        
-        # 淨收益
-        df_test['strategy_net_return'] = df_test['strategy_return'] - df_test['transaction_costs']
-        
-        # 淨值曲線
-        df_test['strategy_gross_equity'] = (1 + df_test['strategy_return']).cumprod()
-        df_test['strategy_net_equity'] = (1 + df_test['strategy_net_return']).cumprod()
-        df_test['bh_equity'] = (1 + df_test['actual_return']).cumprod()
-        
-        # 繪製曲線
-        plt.rc('font', family='MingLiu')  # 支援中文字型
-        plt.figure(figsize=(12, 6))
-        plt.plot(df_test['bh_equity'], label='Buy & Hold', color='gray')
-        plt.plot(df_test['strategy_gross_equity'], label='策略 (未扣費)', color='blue')
-        plt.plot(df_test['strategy_net_equity'], label='策略 (扣費後)', color='red')
-        plt.title(f'回測淨值曲線 ({args.timeframe})')
-        plt.xlabel('時間步')
-        plt.ylabel('淨值')
-        plt.legend()
-        plt.grid(True)
-        print("正在顯示資金曲線...")
-        plt.show()
 
     # --- 過擬合檢測 (學習曲線，預設不顯示，需 --show_overfit) ---
     if args.show_overfit:
@@ -362,6 +305,78 @@ def backtest(model, df_features, features_list):
     sell_ratio = sum(y_pred == 2) / len(y_pred)
     print(f"預測分佈 (持有/買入/賣出): {hold_ratio:.2%} / {buy_ratio:.2%} / {sell_ratio:.2%}")
     # --- 修改結束 ---
+
+def iterative_backtest(df_test, y_pred):
+    print("\n--- [修正版] 事件驅動回測 (測試集) ---")
+    initial_capital = 10000.0
+    cash = initial_capital
+    position = 0  # 持倉數量 (正為多頭, 負為空頭)
+    equity = [initial_capital]
+
+    # 將 y_pred 轉換為訊號 (-1, 0, 1)
+    signal_map = {0: 0, 1: 1, 2: -1}
+    signals = pd.Series(y_pred).map(signal_map).values
+
+    df_test = df_test.copy()
+    df_test['signal'] = 0
+    df_test.iloc[0:len(signals), df_test.columns.get_loc('signal')] = signals
+
+    # 交易的核心邏輯
+    for i in range(1, len(df_test)):
+
+        # 重要的時間點定義
+        # t-1 是訊號產生的時間點
+        # t   是交易執行的時間點
+        prev_close = df_test['Close'].iloc[i-1]
+        current_open = df_test['Open'].iloc[i]
+        current_close = df_test['Close'].iloc[i]
+
+        signal = df_test['signal'].iloc[i-1] # 使用 t-1 的訊號
+
+        # 1. 計算上一期持倉到本期開盤的盈虧
+        if position != 0:
+            unrealized_pnl = position * (current_open - prev_close)
+            cash += unrealized_pnl
+
+        # 2. 根據 t-1 的訊號，在 t 的開盤價執行交易
+        # 平倉邏輯
+        if (signal == -1 and position > 0) or \
+           (signal == 1 and position < 0) or \
+           (signal == 0 and position != 0):
+            cash -= abs(position) * current_open * settings.FEE_RATE # 平倉手續費
+            position = 0
+
+        # 開倉邏輯
+        if signal != 0 and position == 0:
+            trade_size = (cash / current_open) * 0.95 # 用95%的現金去交易
+            position = trade_size if signal == 1 else -trade_size
+            cash -= abs(position) * current_open * settings.FEE_RATE # 開倉手續費
+
+        # 3. 計算本期持倉從開盤到收盤的盈虧
+        final_pnl = 0
+        if position != 0:
+            final_pnl = position * (current_close - current_open)
+
+        # 4. 更新每日權益
+        current_equity = cash + final_pnl
+        equity.append(current_equity)
+
+    # 繪製曲線
+    df_test['equity'] = pd.Series(equity, index=df_test.index[:len(equity)])
+    df_test['bh_return'] = df_test['Close'].pct_change().fillna(0)
+    df_test['bh_equity'] = (1 + df_test['bh_return']).cumprod() * initial_capital
+
+    plt.rc('font', family='MingLiu')
+    plt.figure(figsize=(12, 6))
+    plt.plot(df_test['bh_equity'], label='Buy & Hold', color='gray')
+    plt.plot(df_test['equity'], label='策略 (扣費後)', color='red')
+    plt.title(f'回測淨值曲線 (修正版) ({args.timeframe})')
+    plt.xlabel('時間')
+    plt.ylabel('淨值 (USDT)')
+    plt.legend()
+    plt.grid(True)
+    print("正在顯示修正後的資金曲線...")
+    plt.show()
 
 
 if __name__ == "__main__":
@@ -438,3 +453,18 @@ if __name__ == "__main__":
 
     # 無論訓練或載入，都執行回測 (基於 args)
     backtest(model, df_features, features_list)
+
+    # --- 新增：如果使用者要求，執行更真實的疊代回測 ---
+    if args.show_equity:
+        # 重新分割一次測試集以傳遞給新函式
+        split_index = 0
+        if train:
+            split_index = int(len(df_features) * 0.8)
+
+        df_test_data = df_features.iloc[split_index:]
+
+        # 重新獲取預測結果 (因為 backtest 內部作用域限制)
+        X_test_for_pred = df_test_data[features_list]
+        y_pred_for_iter = model.predict(X_test_for_pred)
+
+        iterative_backtest(df_test_data, y_pred_for_iter)

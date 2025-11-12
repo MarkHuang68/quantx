@@ -333,25 +333,20 @@ def iterative_backtest(df_test, y_pred):
         current_equity = cash + (position_contracts * current_close)
 
         # --- 交易執行 (在 t 的開盤價) ---
-        # 如果訊號與現有倉位反向，則先平倉
+        # --- 交易執行 (在 t 的開盤價) ---
+        # 核心邏輯：只有在訊號與現有倉位反向時，才需要動作 (先平後開)
+        # 訊號為 0 或與現有倉位同向，則持倉不動
+
+        # 1. 平倉邏輯：訊號與倉位反向
         if (signal == -1 and position_contracts > 0) or \
            (signal == 1 and position_contracts < 0):
-            # 平倉，將賣出收入加回現金
             revenue = abs(position_contracts) * current_open
             fee = revenue * settings.FEE_RATE
             cash += (revenue - fee)
-            print(f"[{df_test.index[i]}] 平倉 {'多' if position_contracts > 0 else '空'} @ {current_open:.2f}, 數量: {abs(position_contracts):.4f}, 收入: {revenue-fee:.2f}, 現金: {cash:.2f}")
+            print(f"[{df_test.index[i]}] 反向平倉 {'多' if position_contracts > 0 else '空'} @ {current_open:.2f}, 數量: {abs(position_contracts):.4f}, 收入: {revenue-fee:.2f}, 現金: {cash:.2f}")
             position_contracts = 0
 
-        # 處理訊號為 0 (持有/空手)，若有倉位則平倉
-        if signal == 0 and position_contracts != 0:
-            revenue = abs(position_contracts) * current_open
-            fee = revenue * settings.FEE_RATE
-            cash += (revenue - fee)
-            print(f"[{df_test.index[i]}] 訊號為0, 平倉 {'多' if position_contracts > 0 else '空'} @ {current_open:.2f}, 數量: {abs(position_contracts):.4f}, 收入: {revenue-fee:.2f}, 現金: {cash:.2f}")
-            position_contracts = 0
-
-        # 如果訊號是多/空，且當前無倉位，則開倉
+        # 2. 開倉邏輯：收到開倉訊號且當前為空手
         if signal != 0 and position_contracts == 0:
             trade_value = cash * 0.95  # 使用95%現金開倉
             fee = trade_value * settings.FEE_RATE

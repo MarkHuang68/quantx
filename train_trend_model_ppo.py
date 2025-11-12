@@ -6,8 +6,8 @@ import argparse
 import warnings
 import os
 import json
-import gym  # 用於定義強化學習環境
-from gym import spaces  # 定義狀態和動作空間
+import gymnasium as gym
+from gymnasium import spaces
 from stable_baselines3 import PPO  # PPO 演算法 (需安裝 stable_baselines3)
 from stable_baselines3.common.vec_env import DummyVecEnv  # 向量環境包裝
 from stable_baselines3.common.callbacks import EvalCallback  # 評估回調
@@ -56,11 +56,12 @@ class TradingEnv(gym.Env):
         self.balance = 1.0  # 初始淨值
         self.FEE_RATE = config.settings.FEE_RATE  # 手續費率
 
-    def reset(self):
+    def reset(self, seed=None, options=None):
+        super().reset(seed=seed)
         self.current_step = 0
         self.position = 0
         self.balance = 1.0
-        return self._get_observation()
+        return self._get_observation(), {}
 
     def step(self, action):
         # 計算實際報酬
@@ -83,9 +84,10 @@ class TradingEnv(gym.Env):
         self.balance += reward  # 更新淨值
         
         self.current_step += 1
-        done = self.current_step >= len(self.df) - 1  # 是否結束
+        terminated = self.current_step >= len(self.df) - 1  # 正常結束
+        truncated = False  # 沒有提前截斷
         
-        return self._get_observation(), reward, done, {}
+        return self._get_observation(), reward, terminated, truncated, {}
 
     def _get_observation(self):
         # 獲取當前特徵

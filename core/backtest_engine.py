@@ -47,8 +47,21 @@ class BacktestEngine:
                 if dt in df_features.index:
                     current_features[symbol] = df_features.loc[dt]
 
-            if current_features:
-                await self.strategy.on_bar(dt, current_features)
+            # 準備當前時間點及之前的歷史數據
+            historical_data = {}
+            for symbol, df_features in self.features_data.items():
+                # 使用 un-featured 的原始數據，因為 PPO manager 需要原始 OHLCV
+                original_df = self.data[symbol]
+                # 確保索引是 datetime 物件以進行比較
+                if not isinstance(original_df.index, pd.DatetimeIndex):
+                    original_df.index = pd.to_datetime(original_df.index)
+
+                historical_slice = original_df[original_df.index <= dt]
+                if not historical_slice.empty:
+                    historical_data[symbol] = historical_slice
+
+            if current_features and historical_data:
+                await self.strategy.on_bar(dt, current_features, historical_data)
 
             await self.context.portfolio.update(dt)
 

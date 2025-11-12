@@ -31,6 +31,11 @@ class PPOManager:
         if not model_path:
             print("🛑 錯誤：未提供 PPO 模型路徑。")
             return None
+
+        # 修正：如果路徑以 .zip 結尾，先移除，因為 PPO.load 會自動添加
+        if model_path.endswith('.zip'):
+            model_path = model_path[:-4]
+
         print(f"--- 正在載入 PPO 模型: {model_path} ---")
         try:
             model = PPO.load(model_path)
@@ -49,7 +54,7 @@ class PPOManager:
             print("✅ XGBoost 模型載入成功！")
             return model
         except Exception as e:
-            print(f"🛑 錯誤：無法載入 XGBoost 模型。{e}")
+            print(f"🛑 錯誤：無法載入 XGBoost 模型。詳細錯誤：{e}")
             return None
 
     def get_action(self, ohlcv_data, portfolio_state, xgb_prediction):

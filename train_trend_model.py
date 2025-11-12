@@ -307,75 +307,81 @@ def backtest(model, df_features, features_list):
     # --- 修改結束 ---
 
 def iterative_backtest(df_test, y_pred):
-    print("\n--- [修正版] 事件驅動回測 (測試集) ---")
+    print("\n--- [二次修正版] 事件驅動回測 (已修正會計邏輯) ---")
     initial_capital = 10000.0
     cash = initial_capital
-    position = 0  # 持倉數量 (正為多頭, 負為空頭)
-    equity = [initial_capital]
+    position_contracts = 0.0  # 持倉合約數量 (正為多, 負為空)
+    equity_curve = [initial_capital]
 
-    # 將 y_pred 轉換為訊號 (-1, 0, 1)
     signal_map = {0: 0, 1: 1, 2: -1}
     signals = pd.Series(y_pred).map(signal_map).values
 
     df_test = df_test.copy()
-    df_test['signal'] = 0
+    df_test['signal'] = np.nan
     df_test.iloc[0:len(signals), df_test.columns.get_loc('signal')] = signals
 
-    # 交易的核心邏輯
     for i in range(1, len(df_test)):
-
-        # 重要的時間點定義
-        # t-1 是訊號產生的時間點
-        # t   是交易執行的時間點
-        prev_close = df_test['Close'].iloc[i-1]
+        # --- 時間點與價格 ---
+        # 訊號在 t-1 的收盤後產生
+        # 交易在 t 的開盤時執行
         current_open = df_test['Open'].iloc[i]
         current_close = df_test['Close'].iloc[i]
+        signal = df_test['signal'].iloc[i-1]
 
-        signal = df_test['signal'].iloc[i-1] # 使用 t-1 的訊號
+        # --- 權益計算: 每個 bar 開始時，先更新持倉市值 ---
+        # 權益 = 現金 + 持倉市值
+        current_equity = cash + (position_contracts * current_close)
 
-        # 1. 計算上一期持倉到本期開盤的盈虧
-        if position != 0:
-            unrealized_pnl = position * (current_open - prev_close)
-            cash += unrealized_pnl
+        # --- 交易執行 (在 t 的開盤價) ---
+        # 如果訊號與現有倉位反向，則先平倉
+        if (signal == -1 and position_contracts > 0) or \
+           (signal == 1 and position_contracts < 0):
+            # 平倉，將賣出收入加回現金
+            revenue = abs(position_contracts) * current_open
+            fee = revenue * settings.FEE_RATE
+            cash += (revenue - fee)
+            print(f"[{df_test.index[i]}] 平倉 {'多' if position_contracts > 0 else '空'} @ {current_open:.2f}, 數量: {abs(position_contracts):.4f}, 收入: {revenue-fee:.2f}, 現金: {cash:.2f}")
+            position_contracts = 0
 
-        # 2. 根據 t-1 的訊號，在 t 的開盤價執行交易
-        # 平倉邏輯
-        if (signal == -1 and position > 0) or \
-           (signal == 1 and position < 0) or \
-           (signal == 0 and position != 0):
-            cash -= abs(position) * current_open * settings.FEE_RATE # 平倉手續費
-            position = 0
+        # 處理訊號為 0 (持有/空手)，若有倉位則平倉
+        if signal == 0 and position_contracts != 0:
+            revenue = abs(position_contracts) * current_open
+            fee = revenue * settings.FEE_RATE
+            cash += (revenue - fee)
+            print(f"[{df_test.index[i]}] 訊號為0, 平倉 {'多' if position_contracts > 0 else '空'} @ {current_open:.2f}, 數量: {abs(position_contracts):.4f}, 收入: {revenue-fee:.2f}, 現金: {cash:.2f}")
+            position_contracts = 0
 
-        # 開倉邏輯
-        if signal != 0 and position == 0:
-            trade_size = (cash / current_open) * 0.95 # 用95%的現金去交易
-            position = trade_size if signal == 1 else -trade_size
-            cash -= abs(position) * current_open * settings.FEE_RATE # 開倉手續費
+        # 如果訊號是多/空，且當前無倉位，則開倉
+        if signal != 0 and position_contracts == 0:
+            trade_value = cash * 0.95  # 使用95%現金開倉
+            fee = trade_value * settings.FEE_RATE
 
-        # 3. 計算本期持倉從開盤到收盤的盈虧
-        final_pnl = 0
-        if position != 0:
-            final_pnl = position * (current_close - current_open)
+            if cash > (trade_value + fee):
+                cash -= (trade_value + fee)
+                contracts_to_buy = trade_value / current_open
+                position_contracts = contracts_to_buy if signal == 1 else -contracts_to_buy
+                print(f"[{df_test.index[i]}] 開倉 {'多' if signal == 1 else '空'} @ {current_open:.2f}, 數量: {abs(position_contracts):.4f}, 成本: {trade_value+fee:.2f}, 現金: {cash:.2f}")
 
-        # 4. 更新每日權益
-        current_equity = cash + final_pnl
-        equity.append(current_equity)
+        # --- 權益更新 ---
+        # 重新計算迴圈結束時的權益
+        current_equity = cash + (position_contracts * current_close)
+        equity_curve.append(current_equity)
 
-    # 繪製曲線
-    df_test['equity'] = pd.Series(equity, index=df_test.index[:len(equity)])
+    # --- 繪圖 ---
+    df_test['equity'] = pd.Series(equity_curve, index=df_test.index[:len(equity_curve)])
     df_test['bh_return'] = df_test['Close'].pct_change().fillna(0)
     df_test['bh_equity'] = (1 + df_test['bh_return']).cumprod() * initial_capital
 
     plt.rc('font', family='MingLiu')
     plt.figure(figsize=(12, 6))
     plt.plot(df_test['bh_equity'], label='Buy & Hold', color='gray')
-    plt.plot(df_test['equity'], label='策略 (扣費後)', color='red')
-    plt.title(f'回測淨值曲線 (修正版) ({args.timeframe})')
+    plt.plot(df_test['equity'], label='策略 (扣費後, 修正版)', color='red')
+    plt.title(f'回測淨值曲線 (二次修正版) ({args.timeframe})')
     plt.xlabel('時間')
     plt.ylabel('淨值 (USDT)')
     plt.legend()
     plt.grid(True)
-    print("正在顯示修正後的資金曲線...")
+    print("正在顯示二次修正後的資金曲線...")
     plt.show()
 
 

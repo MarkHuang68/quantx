@@ -298,16 +298,33 @@ class PaperExchange(Exchange):
         return self.portfolio.get_positions()
 
     async def get_latest_price(self, symbol):
-        if symbol in self._kline_data and self._current_dt is not None:
-            try:
-                if self._current_dt in self._kline_data[symbol].index:
-                    return self._kline_data[symbol].loc[self._current_dt]['Close']
-                else:
-                    price_series = self._kline_data[symbol]['Close']
-                    latest_price = price_series.asof(self._current_dt)
-                    if pd.notna(latest_price):
-                        return latest_price
-            except Exception: pass
-        if symbol in self._kline_data and not self._kline_data[symbol].empty:
-            return self._kline_data[symbol]['Close'].iloc[-1]
-        return None
+        if symbol not in self._kline_data or self._current_dt is None:
+            return None # 如果沒有數據或當前時間，則無法提供價格
+
+        df = self._kline_data[symbol]
+        if df.empty:
+            return None
+
+        try:
+            # 優先策略：使用 asof() 找到 dt 或之前的最近有效數據點的收盤價
+            # 這比直接用 loc 索引更穩健，因為它可以處理 dt 不在索引中的情況
+            latest_price = df['Close'].asof(self._current_dt)
+
+            # 如果 asof() 返回 NaN (表示 dt 在所有數據之前)，
+            # 則使用 dt 的開盤價作為後備，這對回測的第一根 K 棒至關重要
+            if pd.isna(latest_price):
+                if self._current_dt in df.index:
+                    latest_price = df.loc[self._current_dt, 'Open']
+
+            # 如果經過上述步驟後價格仍然無效，則使用最後一個已知的收盤價作為最終後備
+            if pd.isna(latest_price):
+                latest_price = df['Close'].iloc[-1]
+
+            return latest_price
+
+        except Exception as e:
+            print(f"在 get_latest_price 中獲取價格時發生意外錯誤: {e}")
+            # 如果發生任何異常，提供一個最終的、最可靠的後備方案
+            if not df.empty:
+                return df['Close'].iloc[-1]
+            return None

@@ -11,7 +11,7 @@ import settings
 from utils.common import create_features_trend, create_sequences
 
 class TradingEnvironment(gym.Env):
-    def __init__(self, df_data, initial_balance=10000, leverage=10, commission=0.0004):
+    def __init__(self, df_data, initial_balance=10000, leverage=10, commission=0.00055):
         super().__init__()
 
         self.df_data = df_data

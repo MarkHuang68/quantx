@@ -129,7 +129,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='交易機器人主程式')
     parser.add_argument('--mode', type=str, choices=['live', 'paper'], required=True)
     parser.add_argument('--exchange', type=str, choices=['binance', 'coinbase', 'bybit'], default='bybit')
-    parser.add_argument('--timeframe', type=str, default='5m')
+    parser.add_argument('--timeframe', type=str, default='1m')
     parser.add_argument('--testnet', action='store_true')
     parser.add_argument('--data-dir', type=str)
     parser.add_argument('--use-ppo', action='store_true')
@@ -163,7 +163,7 @@ if __name__ == '__main__':
     # 將 portfolio 與真實的 exchange 關聯
     context.portfolio.exchange = context.exchange
     from settings import SYMBOLS_TO_TRADE
-    strategy = XGBoostTrendStrategy(context, symbols=SYMBOLS_TO_TRADE, use_ppo=args.use_ppo, ppo_model_path=args.ppo_model)
+    strategy = XGBoostTrendStrategy(context, symbols=SYMBOLS_TO_TRADE, timeframe=args.timeframe, use_ppo=args.use_ppo, ppo_model_path=args.ppo_model)
 
     if args.mode == 'live':
         async def main_live():

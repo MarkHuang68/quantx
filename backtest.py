@@ -3,6 +3,7 @@
 import os
 import sys
 import argparse
+import asyncio
 import matplotlib.pyplot as plt
 
 from core.context import Context
@@ -101,7 +102,7 @@ if __name__ == '__main__':
 
     # 4. 執行回測
     engine = BacktestEngine(context, strategy, data)
-    results = engine.run()
+    results = asyncio.run(engine.run())
 
     # 5. 顯示結果
     if results:

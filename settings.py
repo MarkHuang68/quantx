@@ -9,7 +9,7 @@ MODEL_DIR = 'models'
 # 用於線上交易的交易對
 SYMBOLS_TO_TRADE = [
     'ETHUSDT',
-    # 'BTCUSDT',
+    'BTCUSDT',
 ]
 
 # 用於模型訓練的交易對
@@ -22,7 +22,7 @@ DEFAULT_SYMBOL = SYMBOLS_TO_TRADE[0]
 
 # --- 3. 模型版本控制 ---
 TREND_MODEL_VERSION = "1.0"
-FEE_RATE = 0.00055  # 交易手續費 (0.1%)
+FEE_RATE = 0.001  # 交易手續費 (0.1%)
 
 def get_trend_model_path(symbol, timeframe, version):
     """

@@ -22,7 +22,7 @@ class BacktestEngine:
             df_with_features, _ = create_features_trend(df)
             self.features_data[symbol] = df_with_features
 
-    def run(self):
+    async def run(self):
         print("--- 開始回測 ---")
 
         self._precompute_features()
@@ -40,7 +40,7 @@ class BacktestEngine:
         for dt in tqdm(self.data[main_symbol].index, desc="回測進度"):
             self.context.current_dt = dt
             if isinstance(self.context.exchange, PaperExchange):
-                self.context.exchange.set_current_dt(dt)
+                await self.context.exchange.set_current_dt(dt)
 
             current_features = {}
             for symbol, df_features in self.features_data.items():
@@ -48,9 +48,9 @@ class BacktestEngine:
                     current_features[symbol] = df_features.loc[dt]
 
             if current_features:
-                self.strategy.on_bar(dt, current_features)
+                await self.strategy.on_bar(dt, current_features)
 
-            self.context.portfolio.update(dt)
+            await self.context.portfolio.update(dt)
 
         self.results = self._calculate_performance()
         print("--- 回測結束 ---")

@@ -1,6 +1,8 @@
 # 檔案: backtest.py
 
 import os
+# 設定環境變數以隱藏 TensorFlow/oneDNN 的參考訊息
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
 import sys
 import argparse
 import asyncio
@@ -95,7 +97,7 @@ if __name__ == '__main__':
         strategy = XGBoostTrendStrategy(
             context,
             symbols=list(data.keys()),
-            timeframe='1m',
+            timeframe=args.timeframe,
             use_ppo=args.use_ppo,
             ppo_model_path=args.ppo_model
         )

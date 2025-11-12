@@ -46,13 +46,18 @@ class XGBoostTrendStrategy(BaseStrategy):
                 print(f"🛑 警告：無法載入 {symbol} 的模型。")
                 pass
 
-    async def on_bar(self, dt, current_features):
+    async def on_bar(self, dt, current_features, historical_data=None):
         for symbol in self.symbols:
             if symbol not in self.models or symbol not in current_features:
                 continue
             features_for_symbol = current_features[symbol]
+            historical_data_for_symbol = historical_data.get(symbol) if historical_data else None
+
             if self.use_ppo:
-                await self._process_symbol_with_ppo(symbol, dt, features_for_symbol)
+                if historical_data_for_symbol is None or historical_data_for_symbol.empty:
+                    print(f"警告：回測模式下 PPO 策略缺少 {symbol} 的歷史數據，跳過。")
+                    continue
+                await self._process_symbol_with_ppo(symbol, dt, features_for_symbol, historical_data_for_symbol)
             else:
                 await self._process_symbol_with_rules(symbol, dt, features_for_symbol)
 
@@ -63,16 +68,22 @@ class XGBoostTrendStrategy(BaseStrategy):
         signal_map = {1: 1, 2: -1, 0: 0}
         return signal_map.get(int(raw_prediction), 0)
 
-    async def _process_symbol_with_ppo(self, symbol, dt, features_series):
+    async def _process_symbol_with_ppo(self, symbol, dt, features_series, historical_data):
         ccxt_symbol = convert_symbol_to_ccxt(symbol)
         ppo_manager = self.ppo_managers[symbol]
         if not ppo_manager.initialized:
             print(f"警告：{symbol} 的 PPO 管理器未成功初始化，跳過。")
             return
 
-        # 修正：確保使用 ccxt_symbol 和 self.timeframe
-        ohlcv = await self.context.exchange.get_ohlcv(ccxt_symbol, self.timeframe, limit=200)
-        if ohlcv.empty:
+        # 在回測模式下，直接使用傳入的歷史數據
+        # 在即時交易中，historical_data 會是 None，此時才需要從交易所獲取
+        if historical_data is not None:
+            ohlcv = historical_data.tail(200) # 取最近 200 筆
+        else:
+            ohlcv = await self.context.exchange.get_ohlcv(ccxt_symbol, self.timeframe, limit=200)
+
+        if ohlcv is None or ohlcv.empty:
+            print(f"警告：{symbol} 在 {dt} 沒有可用的 OHLCV 數據，跳過 PPO 處理。")
             return
 
         positions = self.context.portfolio.get_positions()

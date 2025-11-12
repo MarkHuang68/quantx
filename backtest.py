@@ -66,8 +66,9 @@ if __name__ == '__main__':
 
     # 1. 初始化回測環境
     context = Context()
-    context.portfolio = Portfolio(context.initial_capital, context.exchange)
+    context.portfolio = Portfolio(context.initial_capital, None)
     context.exchange = PaperExchange(context.portfolio)
+    context.portfolio.exchange = context.exchange
 
 
     # 2. 載入數據

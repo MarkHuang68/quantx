@@ -1,0 +1,22 @@
+{
+    "ETHUSDT_15m": {
+        "best_f1_score": 0.5159725100079766,
+        "train_f1_score": 0.5846580791121568,
+        "reference_sharpe_ratio": -3.547704454510229,
+        "objective_sharpe_ratio": 3.5839791511269725,
+        "reference_equity": 10037.182403749308,
+        "reference_conf_buy": 0.51,
+        "reference_conf_sell": 0.51,
+        "model_file": "models\\ETHUSDT\\model_1d7857.json",
+        "config_file": "models\\ETHUSDT\\model_1d7857_feature_config.json",
+        "feature_params": {
+            "dmi_len_ma_4h": 10,
+            "dmi_len_ma_1h": 8,
+            "dmi_len_ma_15m": 5,
+            "rsi_period": 7
+        },
+        "start_date": "2024-12-01",
+        "end_date": "2025-05-01",
+        "last_updated": "2025-11-20T22:39:47.391013"
+    }
+}

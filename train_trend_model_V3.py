@@ -27,7 +27,7 @@ from sklearn.metrics import ConfusionMatrixDisplay
 import settings 
 from settings import get_best_model_config, load_registry, save_registry
 # 【修正】: 僅保留 fetch_data，特徵計算改為使用 V3 邏輯
-from utils.common import fetch_data, create_features_trend
+from utils.common import fetch_data 
 from hyperparameter_search import SearchIterator
 
 # 【新增】: 外部庫檢查 (V3 核心依賴)
@@ -71,9 +71,9 @@ XGB_BASE_PARAMS = {
 
 # 【保持 V1 尋參範圍，但需要注意 num_class 的影響】
 PARAM_DIST = {
-    'max_depth': randint(1, 5),
-    'learning_rate': uniform(0.01, 0.05),
-    'min_child_weight': uniform(0, 5),
+    # 'max_depth': randint(1, 5),
+    # 'learning_rate': uniform(0.01, 0.05),
+    # 'min_child_weight': uniform(1, 10),
     # 'gamma': uniform(0.1, 1),
     # 'reg_lambda': uniform(1, 5),
     # 'reg_alpha': uniform(1, 5)
@@ -87,6 +87,111 @@ FEATURE_SEARCH_SPACE = {
     'rsi_period': [7, 21, 7],
 }
 FEATURE_FORMAT_TYPES = {k: 'range' for k in FEATURE_SEARCH_SPACE.keys()}
+
+
+# --------------------- 【V3 核心函數：MTF DMI 特徵計算】 ---------------------
+
+def calculate_dmi_hist(df, len_di, len_ma, len_adx_smooth=14):
+    """計算 DMI 柱體、MA 線和 ADX 數值，並加入長度檢查。"""
+    df_temp = df.copy()
+    if len(df_temp) < len_di + 30: 
+        for col in ['histValue', 'histMa', 'histMa_Up', 'histMa_BelowZero', 'ADX']: df_temp[col] = np.nan
+        return df_temp
+    
+    plus_di  = talib.PLUS_DI(df_temp['High'], df_temp['Low'], df_temp['Close'], timeperiod=len_di)
+    minus_di = talib.MINUS_DI(df_temp['High'], df_temp['Low'], df_temp['Close'], timeperiod=len_di)
+    adx_val  = talib.ADX(df_temp['High'], df_temp['Low'], df_temp['Close'], timeperiod=len_di)
+    
+    df_temp['histValue'] = plus_di - minus_di
+    alpha = 1 / len_ma
+    df_temp['histMa'] = df_temp['histValue'].ewm(alpha=alpha, adjust=False).mean()
+    df_temp['histMa_Up'] = (df_temp['histMa'] >= df_temp['histMa'].shift(1)).astype(float) # 轉為 float 避免 merge 問題
+    df_temp['histMa_BelowZero'] = (df_temp['histMa'] < 0).astype(float)
+    df_temp['ADX'] = adx_val
+    return df_temp
+
+def create_mtf_dmi_features(df_15m_raw, DMI_DI_LEN=14, **feature_params):
+    """產生跨時間框架的 DMI 趨勢特徵並合併到 15M K 線上 (含 ADX)。"""
+    df_15m = df_15m_raw.copy()
+    
+    df_4h = df_15m_raw.resample('4H').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+    df_4h = calculate_dmi_hist(df_4h, DMI_DI_LEN, feature_params.get('dmi_len_ma_4h', 10))
+    
+    df_1h = df_15m_raw.resample('1H').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+    df_1h = calculate_dmi_hist(df_1h, DMI_DI_LEN, feature_params.get('dmi_len_ma_1h', 10))
+    
+    df_15m = calculate_dmi_hist(df_15m, DMI_DI_LEN, feature_params.get('dmi_len_ma_15m', 10))
+
+    # 合併 4H 特徵
+    df_15m = df_15m.merge(
+        df_4h[['histMa', 'histMa_Up', 'histMa_BelowZero', 'ADX']].shift(1).rename(
+            columns={'histMa': '4H_Ma', 'histMa_Up': '4H_Ma_Up', 'histMa_BelowZero': '4H_Ma_DownTrend', 'ADX': '4H_ADX'}
+        ), left_index=True, right_index=True, how='left'
+    ).ffill()
+    # 確保 bool 轉 float
+    df_15m['4H_Ma_Up'] = df_15m['4H_Ma_Up'].astype(float)
+    df_15m['4H_Ma_DownTrend'] = df_15m['4H_Ma_DownTrend'].astype(float)
+    
+    # 合併 1H 特徵
+    df_15m = df_15m.merge(
+        df_1h[['histMa', 'histMa_Up', 'histMa_BelowZero', 'ADX']].shift(1).rename(
+            columns={'histMa': '1H_Ma', 'histMa_Up': '1H_Ma_Up', 'histMa_BelowZero': '1H_Ma_DownTrend', 'ADX': '1H_ADX'}
+        ), left_index=True, right_index=True, how='left'
+    ).ffill()
+    df_15m['1H_Ma_Up'] = df_15m['1H_Ma_Up'].astype(float)
+    df_15m['1H_Ma_DownTrend'] = df_15m['1H_Ma_DownTrend'].astype(float)
+    
+    df_15m['15M_Ma_Delta'] = df_15m['histMa'] - df_15m['histMa'].shift(1)
+
+    mtf_features = [
+        '4H_Ma', '4H_Ma_Up', '4H_Ma_DownTrend', '4H_ADX',
+        '1H_Ma', '1H_Ma_Up', '1H_Ma_DownTrend', '1H_ADX',
+        'histValue', 'histMa', 'histMa_Up', '15M_Ma_Delta', 'ADX',
+    ]
+    return df_15m, mtf_features
+
+def create_features_trend(df_raw, **feature_params):
+    """產生所有特徵並合併 MTF 邏輯 (V3 邏輯)。"""
+    if df_raw is None: return None, None
+    df = df_raw.copy()
+    
+    # 1. 執行 MTF DMI 特徵計算
+    try:
+        df, mtf_features = create_mtf_dmi_features(df, **feature_params)
+    except Exception as e:
+        print(f"❌ MTF DMI 特徵計算失敗: {e}")
+        mtf_features = []
+
+    # 2. 傳統/衍生品特徵計算
+    close_prices = df['Close']
+    
+    # EMA 結構特徵 (用於捕捉反轉風險)
+    ema_s, ema_m, ema_l = talib.EMA(close_prices, 10), talib.EMA(close_prices, 30), talib.EMA(close_prices, 60)
+    df['CLOSE_EMA_L'] = (close_prices - ema_l) / ema_l
+    df['EMA_M_EMA_L'] = (ema_m - ema_l) / ema_l
+    
+    # RSI
+    df['RSI'] = talib.RSI(close_prices, timeperiod=feature_params.get('rsi_period', 14))
+    
+    # 衍生品特徵 (FundingRate)
+    if 'FundingRate' in df.columns:
+        df['FR_ROC'] = df['FundingRate'].pct_change().replace([np.inf, -np.inf], np.nan)
+        df['FR_ABS'] = df['FundingRate'] * 1000 
+        df['FR_ROC'] = df['FR_ROC'].fillna(0.0) 
+        df['FR_ABS'] = df['FR_ABS'].fillna(0.0)
+    else:
+        df['FR_ROC'], df['FR_ABS'] = 0.0, 0.0
+
+    # 3. 組合最終特徵列表
+    features_list = [
+        *mtf_features, 
+        'CLOSE_EMA_L', 'EMA_M_EMA_L', 'RSI', 
+        'FR_ROC', 'FR_ABS'
+    ]
+    
+    features_list = list(set(features_list))
+    df_features = df.dropna(subset=features_list)
+    return df_features, features_list
 
 # --------------------- 【V3 核心函數：三分類訓練 (含類別權重)】 ---------------------
 
@@ -505,7 +610,7 @@ if __name__ == "__main__":
                     df_train_current, df_val_current, features_list_2,
                     model_param_dist=None,
                     base_model_params=best_model_params, 
-                    no_search_model=True,             
+                    no_search_model=args.no_search_model,             
                     show_overfit=False
                 )
 
@@ -580,8 +685,8 @@ if __name__ == "__main__":
         print(f"\n--- 階段四: 正在使用 (最佳模型/門檻) 在「客觀測試集」上執行最終評估 ---")
         
         # 暫時強制開啟繪圖
-        # args.show_confidence = True
-        # args.show_equity = True
+        args.show_confidence = True
+        args.show_equity = True
         
         objective_equity, objective_sharpe = vector_backtest(
             best_model, df_test.copy(), features_list, best_conf_buy, best_conf_sell, args

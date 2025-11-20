@@ -1,5 +1,5 @@
-# 檔案: common_utils.py
-# 這裡是「唯一」的特徵工程函數 (您「寫死」的黃金配方)
+# 檔案: common.py
+# 這裡是「唯一」的特徵工程函數 (V3 MTF DMI 黃金配方)
 # 您的「訓練」和「實盤」腳本都會 100% 引用這裡
 
 import os
@@ -10,227 +10,228 @@ import numpy as np
 import time
 import talib
 
-def fetch_data(symbol, timeframe, start_date=None, end_date=None, total_limit=None):
-    """ 獲取 OHLCV 資料（含快取邏輯）。
-    - 若 start_date 及 end_date 皆設，先查本地 data/ CSV。
-    - 無則抓取並存至 data/{symbol_safe}_{timeframe}_{start_date}_{end_date}.csv。
-    - 確保 data/ 存在。
-    """
-    print(f"--- 正在獲取 {symbol} {timeframe} 資料 ---")
-    symbol_safe = symbol.replace('/', '')  # 安全檔名，如 ETHUSDT
+# ⭐ 新增函數：抓取單一衍生品指標的歷史數據 (保持不變)
+def fetch_derivative_data(exchange, symbol, timeframe, since_timestamp, end_timestamp, derivative_type, timeframe_ms):
+    all_data = []
+    current_timestamp = since_timestamp
+    limit_per_request = 1000
     
-    cache_file = None
-    if start_date and end_date:
-        cache_dir = 'data'
-        os.makedirs(cache_dir, exist_ok=True)  # 確保目錄存在
-        cache_file = os.path.join(cache_dir, f"{symbol_safe}_{timeframe}_{start_date}_{end_date}.csv")
-        
-        if os.path.exists(cache_file):
-            print(f"✅ 找到快取 {cache_file}，載入中...")
-            df = pd.read_csv(cache_file, index_col='timestamp', parse_dates=True)
-            print("DataFrame 從快取載入完成。")
-            return df
+    if derivative_type == 'funding_rate':
+        fetch_method = exchange.fetch_funding_rate_history
+    elif derivative_type == 'open_interest':
+        return None 
 
+    print(f"--- 正在獲取 {symbol} {derivative_type} 資料 ---")
+    
+    while current_timestamp < end_timestamp:
+        try:
+            if derivative_type == 'funding_rate':
+                data = fetch_method(symbol, since=current_timestamp, limit=limit_per_request)
+            else:
+                return None 
+            
+            if not data: break
+            
+            all_data.extend(data)
+            last_timestamp = data[-1]['timestamp']
+            current_timestamp = last_timestamp + timeframe_ms # 下一根 K 棒
+            
+            if current_timestamp >= end_timestamp: break
+            time.sleep(1)
+            
+        except Exception as e:
+            print(f"獲取 {derivative_type} 錯誤: {e}")
+            break
+
+    if not all_data: return None
+    
+    if derivative_type == 'funding_rate':
+        df = pd.DataFrame(all_data)
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.rename(columns={'fundingRate': 'FundingRate'}, inplace=True)
+        return df[['timestamp', 'FundingRate']].set_index('timestamp')
+        
+    return None
+
+def fetch_data(symbol, timeframe, start_date=None, end_date=None, total_limit=None):
+    """ 獲取 OHLCV 和衍生品資料（含快取邏輯）。"""
+    print(f"--- 正在獲取 {symbol} {timeframe} 資料 ---")
+    symbol_safe = symbol.replace('/', '')
+    
+    # --- 計算時間範圍 ---
     exchange = ccxt.bybit({'rateLimit': 1200, 'enableRateLimit': True})
     timeframe_ms = exchange.parse_timeframe(timeframe) * 1000
     limit_per_request = 1000
-    all_ohlcv = []
+    
+    end_timestamp = int(pd.to_datetime(end_date).timestamp() * 1000) if end_date else exchange.milliseconds()
     
     if start_date:
         since_timestamp = int(pd.to_datetime(start_date).timestamp() * 1000)
     else:
-        since_timestamp = exchange.milliseconds() - (total_limit * timeframe_ms) if total_limit else None
+        since_timestamp = end_timestamp - (total_limit * timeframe_ms) if total_limit else None
+
+    start_date_str = pd.to_datetime(since_timestamp, unit='ms').strftime('%Y-%m-%d') if since_timestamp else 'start'
+    end_date_str = pd.to_datetime(end_timestamp, unit='ms').strftime('%Y-%m-%d')
     
-    end_timestamp = int(pd.to_datetime(end_date).timestamp() * 1000) if end_date else None
+    # --- 1. OHLCV 抓取 ---
+    cache_file_ohlcv = os.path.join('data', f"{symbol_safe}_{timeframe}_{start_date_str}_{end_date_str}.csv")
     
-    while True:
-        try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=since_timestamp, limit=limit_per_request)
-            if not ohlcv: break
-            all_ohlcv.extend(ohlcv)
-            last_timestamp = ohlcv[-1][0]
-            since_timestamp = last_timestamp + timeframe_ms
-            if end_timestamp and last_timestamp >= end_timestamp: break
-            time.sleep(1)  # 避免 rate limit
-        except Exception as e:
-            print(f"獲取錯誤: {e}")
-            time.sleep(5)
-    
-    if not all_ohlcv: return None
-    df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
-    df = df.drop_duplicates(subset=['timestamp'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    df.set_index('timestamp', inplace=True)
-    for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
-    
-    if end_timestamp:
+    if os.path.exists(cache_file_ohlcv):
+        print(f"✅ 找到快取 {cache_file_ohlcv}，載入中...")
+        df = pd.read_csv(cache_file_ohlcv, index_col='timestamp', parse_dates=True)
+    else:
+        all_ohlcv = []
+        current_since = since_timestamp
+        
+        while True:
+            try:
+                ohlcv = exchange.fetch_ohlcv(symbol, timeframe, since=current_since, limit=limit_per_request)
+                if not ohlcv: break
+                all_ohlcv.extend(ohlcv)
+                last_timestamp = ohlcv[-1][0]
+                current_since = last_timestamp + timeframe_ms
+                if last_timestamp >= end_timestamp: break
+                time.sleep(1)
+            except Exception as e:
+                print(f"獲取 OHLCV 錯誤: {e}")
+                time.sleep(5)
+                break
+        
+        if not all_ohlcv: return None
+        df = pd.DataFrame(all_ohlcv, columns=['timestamp', 'Open', 'High', 'Low', 'Close', 'Volume'])
+        df = df.drop_duplicates(subset=['timestamp'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        df.set_index('timestamp', inplace=True)
+        for col in ['Open', 'High', 'Low', 'Close', 'Volume']:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        
         df = df[df.index <= pd.to_datetime(end_timestamp, unit='ms')]
+        
+        print(f"✅ 保存 OHLCV 快取至 {cache_file_ohlcv}")
+        df.to_csv(cache_file_ohlcv)
     
-    if total_limit and len(df) > total_limit:
-        df = df.tail(total_limit)
+    # --- 2. 衍生品抓取 (資金費率) ---
+    df_funding = fetch_derivative_data(exchange, symbol, timeframe, since_timestamp, end_timestamp, 'funding_rate', timeframe_ms)
     
-    if cache_file:
-        print(f"✅ 保存快取至 {cache_file}")
-        df.to_csv(cache_file)
-    
+    if df_funding is not None:
+        df_funding_resampled = df_funding.resample(timeframe).ffill()
+        df = df.join(df_funding_resampled, how='left')
+        df['FundingRate'] = df['FundingRate'].ffill() 
+        
     print("DataFrame 處理完成。")
     return df
 
-def create_features_trend(df):
-    """
-    (模型 A) 進場特徵 (報酬率預測模型)。
-    """
-    if df is None:
-        return None, None
-        
-    # print("\n--- 正在計算「進場特徵」---")
+# -------------------------- 【V3 MTF DMI 特徵開始】 --------------------------
 
-    close_prices = df['Close']
-    high_prices = df['High']
-    low_prices = df['Low']
-    volume = df['Volume']
+def calculate_dmi_hist(df, len_di=14, len_ma=10, len_adx_smooth=14):
+    """計算 DMI 柱體、MA 線和 ADX 數值，並加入長度檢查。"""
+    df_temp = df.copy()
+    if len(df_temp) < len_di + 30: 
+        for col in ['histValue', 'histMa', 'histMa_Up', 'histMa_BelowZero', 'ADX']: df_temp[col] = np.nan
+        return df_temp
+    
+    plus_di  = talib.PLUS_DI(df_temp['High'], df_temp['Low'], df_temp['Close'], timeperiod=len_di)
+    minus_di = talib.MINUS_DI(df_temp['High'], df_temp['Low'], df_temp['Close'], timeperiod=len_di)
+    adx_val  = talib.ADX(df_temp['High'], df_temp['Low'], df_temp['Close'], timeperiod=len_di)
+    
+    df_temp['histValue'] = plus_di - minus_di
+    alpha = 1 / len_ma
+    df_temp['histMa'] = df_temp['histValue'].ewm(alpha=alpha, adjust=False).mean()
+    df_temp['histMa_Up'] = (df_temp['histMa'] >= df_temp['histMa'].shift(1)).astype(float) 
+    df_temp['histMa_BelowZero'] = (df_temp['histMa'] < 0).astype(float)
+    df_temp['ADX'] = adx_val
+    return df_temp
 
+def create_mtf_dmi_features(df_15m_raw, DMI_DI_LEN=14, **feature_params):
+    """產生跨時間框架的 DMI 趨勢特徵並合併到 15M K 線上 (含 ADX)。"""
+    df_15m = df_15m_raw.copy()
+    
+    # 重新採樣數據
+    df_4h = df_15m_raw.resample('4H').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+    df_1h = df_15m_raw.resample('1H').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+    
+    # 計算 MTF 特徵
+    df_4h = calculate_dmi_hist(df_4h, DMI_DI_LEN, feature_params.get('dmi_len_ma_4h', 10))
+    df_1h = calculate_dmi_hist(df_1h, DMI_DI_LEN, feature_params.get('dmi_len_ma_1h', 10))
+    df_15m = calculate_dmi_hist(df_15m, DMI_DI_LEN, feature_params.get('dmi_len_ma_15m', 10))
+
+    # 合併 4H 特徵
+    df_15m = df_15m.merge(
+        df_4h[['histMa', 'histMa_Up', 'histMa_BelowZero', 'ADX']].shift(1).rename(
+            columns={'histMa': '4H_Ma', 'histMa_Up': '4H_Ma_Up', 'histMa_BelowZero': '4H_Ma_DownTrend', 'ADX': '4H_ADX'}
+        ), left_index=True, right_index=True, how='left'
+    ).ffill()
+    df_15m['4H_Ma_Up'] = df_15m['4H_Ma_Up'].astype(float)
+    df_15m['4H_Ma_DownTrend'] = df_15m['4H_Ma_DownTrend'].astype(float)
+    
+    # 合併 1H 特徵
+    df_15m = df_15m.merge(
+        df_1h[['histMa', 'histMa_Up', 'histMa_BelowZero', 'ADX']].shift(1).rename(
+            columns={'histMa': '1H_Ma', 'histMa_Up': '1H_Ma_Up', 'histMa_BelowZero': '1H_Ma_DownTrend', 'ADX': '1H_ADX'}
+        ), left_index=True, right_index=True, how='left'
+    ).ffill()
+    df_15m['1H_Ma_Up'] = df_15m['1H_Ma_Up'].astype(float)
+    df_15m['1H_Ma_DownTrend'] = df_15m['1H_Ma_DownTrend'].astype(float)
+    
+    df_15m['15M_Ma_Delta'] = df_15m['histMa'] - df_15m['histMa'].shift(1)
+
+    mtf_features = [
+        '4H_Ma', '4H_Ma_Up', '4H_Ma_DownTrend', '4H_ADX',
+        '1H_Ma', '1H_Ma_Up', '1H_Ma_DownTrend', '1H_ADX',
+        'histValue', 'histMa', 'histMa_Up', '15M_Ma_Delta', 'ADX',
+    ]
+    return df_15m, mtf_features
+
+def create_features_trend(df_raw, **feature_params):
+    """ (V3 模型) 產生所有特徵並合併 MTF DMI 邏輯。 """
+    if df_raw is None: return None, None
+    df = df_raw.copy()
+    
+    # 1. 執行 MTF DMI 特徵計算
     try:
-        ema_s = talib.EMA(close_prices, timeperiod=8)
-        ema_m = talib.EMA(close_prices, timeperiod=20)
-        ema_l = talib.EMA(close_prices, timeperiod=60)
-
-        df['HOUR'] = df.index.hour
-        df['D_OF_W'] = df.index.dayofweek
-        df['EMA_S'] = ema_s
-        df['EMA_M'] = ema_m
-        df['EMA_L'] = ema_l
-        df['CLOSE_EMA_S'] = (close_prices - ema_s) / ema_s
-        df['CLOSE_EMA_M'] = (close_prices - ema_m) / ema_m
-        df['CLOSE_EMA_L'] = (close_prices - ema_l) / ema_l
-        df['EMA_S_EMA_M'] = (ema_s - ema_m) / ema_m
-        df['EMA_M_EMA_L'] = (ema_m - ema_l) / ema_l
-        df['TREND'] = (ema_s > ema_m) & (ema_m > ema_l)
-        df['TREND1'] = (ema_s < ema_m) & (ema_m > ema_l)
-        df['TREND2'] = (ema_s < ema_m) & (ema_m < ema_l)
-        df['TREND3'] = (ema_s > ema_m) & (ema_m < ema_l)
-        df['ATR'] = talib.ATR(high_prices, low_prices, close_prices, timeperiod=14)
-        df['RSI'] = talib.RSI(close_prices, timeperiod=14)
-        df['MOM'] = talib.MOM(close_prices, timeperiod=10)
-        df['ADX'] = talib.ADX(high_prices, low_prices, close_prices)
-        df['ADX_hist'] = talib.PLUS_DI(high_prices, low_prices, close_prices) - talib.MINUS_DI(high_prices, low_prices, close_prices)
-        df['ADX_hist_ema'] = talib.EMA(df['ADX_hist'], 10)
-        df['WILLR'] = talib.WILLR(high_prices, low_prices, close_prices, timeperiod=20)
-
-        df['KDJ_K'], df['KDJ_D'] = talib.STOCH(
-                                    high_prices, 
-                                    low_prices, 
-                                    close_prices, 
-                                    fastk_period=9,
-                                    slowk_period=3,
-                                    slowk_matype=0, # 設為 0 使用 SMA
-                                    slowd_period=3,
-                                    slowd_matype=0  # 設為 0 使用 SMA
-                                    )
-        df['KDJ_J'] = (3 * df['KDJ_K']) - (2 * df['KDJ_D'])
-        
-        df['MACD'], df['MACD_signal'], df['MACD_hist'] = talib.MACD(close_prices, 
-                                                                    fastperiod=12, 
-                                                                    slowperiod=26, 
-                                                                    signalperiod=9)
-
-        upperband, middleband, lowerband = talib.BBANDS(close_prices, 
-                                                        timeperiod=20, 
-                                                        nbdevup=2, 
-                                                        nbdevdn=2, 
-                                                        matype=0)
-        
-        df['BB_Width'] = (upperband - lowerband) / (middleband + 1e-10)
-        df['BB_Percent'] = (close_prices - lowerband) / (upperband - lowerband + 1e-10)
-
-        df['OBV'] = talib.OBV(close_prices, volume)
-        df['VOLUME_CHANGE'] = df['Volume'].pct_change()
-        df['VOLUME_CHANGE'] = df['VOLUME_CHANGE'].replace([np.inf, -np.inf], np.nan)
-
-        # 以下是幫助ML學習忽略抄襲
-
-        # 平穩化: 用對數 Close (轉換價格為對數，使序列更平穩，減低極端波動影響，幫助模型捕捉百分比變化)
-        df['log_close'] = np.log(df['Close'])
-
-        # 加滯後特徵 (加入1-5期滯後報酬，捕捉時間依賴，讓模型學習序列模式，避免只抄當前值)
-        for lag in range(1, 6):
-            df[f'lag_return_{lag}'] = df['Close'].pct_change().shift(lag)
-
-        # 加波動率 (計算14期標準差，測量價格波動，提供風險信號，幫助預測轉折或趨勢強度)
-        df['volatility'] = df['Close'].rolling(14).std()
-
-        # --- (特徵列表) ---
-        features_list = [
-            # 'HOUR',
-            # 'D_OF_W',
-
-            # 'EMA_S',
-            # 'EMA_M',
-            # 'EMA_L',
-            # 'CLOSE_EMA_S',
-            # 'CLOSE_EMA_M',
-            'CLOSE_EMA_L',
-            # 'EMA_S_EMA_M',
-            # 'EMA_M_EMA_L',
-            # 'TREND',
-            # 'TREND1',
-            # 'TREND2',
-            # 'TREND3',
-            # 'ATR',
-            'RSI',
-            'MOM',
-            # 'ADX',
-            # 'ADX_hist',
-            # 'ADX_hist_ema',
-            # 'WILLR',
-            # 'KDJ_K',
-            # 'KDJ_D',
-            # 'KDJ_J',
-
-            'MACD', 'MACD_signal',
-            'MACD_hist',
-            
-            'BB_Width',
-            'BB_Percent',
-
-            # 'OBV',
-            # 'Volume',
-            # 'VOLUME_CHANGE',
-
-            # 'log_close',
-            # 'lag_return_1',
-            # 'lag_return_2',
-            # 'lag_return_3',
-            # 'lag_return_4',
-            # 'lag_return_5',
-            # 'volatility'
-        ]
-
-        df_features = df.dropna()
-        return df_features, features_list
-
+        df, mtf_features = create_mtf_dmi_features(df, **feature_params)
     except Exception as e:
-        print(f"計算進場特徵時發生錯誤: {e}")
-        return None, None
+        print(f"❌ MTF DMI 特徵計算失敗: {e}")
+        mtf_features = []
 
-def create_sequences(data, target, lookback_window=24):
-    """ (這是 LSTM 專用的，保持不變) """
-    print(f"\n--- 正在建立 3D 序列 (回看 {lookback_window} 根 K 棒)... ---")
-    X = []
-    y = []
-    for i in range(lookback_window, len(data)):
-        X.append(data[i-lookback_window:i, :])
-        y.append(target[i])
-    X, y = np.array(X), np.array(y)
-    return X, y
+    # 2. 傳統/衍生品特徵計算
+    close_prices = df['Close']
+    
+    # EMA 結構特徵 (用於捕捉反轉風險)
+    ema_s, ema_m, ema_l = talib.EMA(close_prices, 10), talib.EMA(close_prices, 30), talib.EMA(close_prices, 60)
+    df['CLOSE_EMA_L'] = (close_prices - ema_l) / ema_l
+    df['EMA_M_EMA_L'] = (ema_m - ema_l) / ema_l
+    
+    # RSI
+    df['RSI'] = talib.RSI(close_prices, timeperiod=feature_params.get('rsi_period', 14))
+    
+    # 衍生品特徵 (FundingRate)
+    if 'FundingRate' in df.columns:
+        df['FR_ROC'] = df['FundingRate'].pct_change().replace([np.inf, -np.inf], np.nan)
+        df['FR_ABS'] = df['FundingRate'] * 1000 
+        # 處理 NaN，防止影響特徵計算
+        df['FR_ROC'] = df['FR_ROC'].fillna(0.0) 
+        df['FR_ABS'] = df['FR_ABS'].fillna(0.0)
+    else:
+        df['FR_ROC'], df['FR_ABS'] = 0.0, 0.0
+
+    # 3. 組合最終特徵列表
+    features_list = [
+        *mtf_features, 
+        'CLOSE_EMA_L', 'EMA_M_EMA_L', 'RSI', 
+        'FR_ROC', 'FR_ABS'
+    ]
+    
+    features_list = list(set(features_list))
+    df_features = df.dropna(subset=features_list)
+    return df_features, features_list
+
+# -------------------------- 【V3 MTF DMI 特徵結束】 --------------------------
 
 def convert_symbol_to_ccxt(symbol: str) -> str:
-    """將 'ETHUSDT' 轉換為 'ETH/USDT:USDT'"""
     if '/' in symbol: return symbol
     base = symbol.replace('USDT', '')
     return f"{base}/USDT:USDT"
 
 def convert_symbol_from_ccxt(ccxt_symbol: str) -> str:
-    """將 'ETH/USDT:USDT' 轉換為 'ETHUSDT'"""
     return ccxt_symbol.split('/')[0]
